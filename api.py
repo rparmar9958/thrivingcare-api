@@ -9,6 +9,7 @@ Endpoints:
 - POST /api/candidates/{id}/resume - Upload resume
 - GET /api/jobs/count - Get total active jobs
 - GET /api/jobs - Get job listings (paginated)
+- GET /run-migrations - Run database migrations
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
@@ -112,8 +113,115 @@ def read_root():
     return {
         "status": "healthy",
         "service": "ThrivingCare API",
-        "version": "1.0"
+        "version": "1.1"
     }
+
+
+# ============================================================================
+# DATABASE MIGRATIONS
+# ============================================================================
+
+@app.get("/run-migrations")
+def run_migrations():
+    """Run database migrations to add all required columns and tables"""
+    
+    migrations = [
+        # JOBS TABLE UPDATES
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS description TEXT",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS discipline VARCHAR(100)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS requirements TEXT",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS pay_rate DECIMAL(10,2)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS shift_length VARCHAR(20)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS shift_type VARCHAR(50)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS days_per_week INTEGER",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS schedule_notes TEXT",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contract_length VARCHAR(50)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contract_type VARCHAR(50)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS start_date DATE",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS setting VARCHAR(100)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS source VARCHAR(100) DEFAULT 'Manual Entry'",
+        
+        # CANDIDATES TABLE UPDATES
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS discipline VARCHAR(100)",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS specialty VARCHAR(100)",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS years_experience INTEGER",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS license_states TEXT",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS preferred_locations TEXT",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS min_pay_rate DECIMAL(10,2)",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS max_pay_rate DECIMAL(10,2)",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS availability_date DATE",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_status VARCHAR(50) DEFAULT 'pending'",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_score INTEGER",
+        
+        # ADMINS TABLE (NEW)
+        """CREATE TABLE IF NOT EXISTS admins (
+            id SERIAL PRIMARY KEY,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL,
+            first_name VARCHAR(100),
+            last_name VARCHAR(100),
+            role VARCHAR(50) DEFAULT 'recruiter',
+            active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""",
+        
+        # PIPELINE STAGES TABLE (NEW)
+        """CREATE TABLE IF NOT EXISTS pipeline_stages (
+            id SERIAL PRIMARY KEY,
+            candidate_id INTEGER REFERENCES candidates(id) ON DELETE CASCADE,
+            job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+            stage VARCHAR(50) NOT NULL,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""",
+        
+        # AI VETTING LOGS TABLE (NEW)
+        """CREATE TABLE IF NOT EXISTS ai_vetting_logs (
+            id SERIAL PRIMARY KEY,
+            candidate_id INTEGER REFERENCES candidates(id) ON DELETE CASCADE,
+            session_id VARCHAR(100),
+            question TEXT,
+            response TEXT,
+            question_type VARCHAR(50),
+            score INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""",
+    ]
+    
+    results = []
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                for migration in migrations:
+                    try:
+                        cur.execute(migration)
+                        conn.commit()
+                        results.append({
+                            "success": True,
+                            "statement": migration[:60] + "..."
+                        })
+                    except Exception as e:
+                        conn.rollback()
+                        results.append({
+                            "success": False,
+                            "statement": migration[:60] + "...",
+                            "error": str(e)
+                        })
+        
+        successful = len([r for r in results if r["success"]])
+        failed = len([r for r in results if not r["success"]])
+        
+        return {
+            "message": "Migrations complete!",
+            "total": len(migrations),
+            "successful": successful,
+            "failed": failed,
+            "details": results
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Migration failed: {str(e)}")
 
 
 @app.get("/api/jobs/count")
