@@ -740,109 +740,138 @@ def calculate_pay_package(request: PayCalculatorRequest):
     """
     Calculate complete pay package from bill rate.
     
-    Uses GSA per diem rates to split compensation into:
-    - Taxable hourly wage
-    - Tax-free housing stipend (travel contracts only)
-    - Tax-free M&IE stipend (travel contracts only)
+    Logic:
+    1. Start with bill rate × hours = weekly revenue
+    2. Subtract gross margin (your profit)
+    3. Subtract burden (employer taxes, WC, insurance)
+    4. What's left = total available for candidate
+    5. For travel: Maximize GSA stipends, remainder = taxable hourly
+    6. Ensure minimum wage compliance
+    
+    All outputs are WEEKLY (industry standard for travel contracts).
     """
     
-    # Get GSA rates
+    # Get GSA rates for location
     gsa_rates = get_gsa_rates(request.city, request.state)
     daily_lodging = gsa_rates["lodging"]
     daily_mie = gsa_rates["mie"]
     
-    # Calculate weekly/monthly values
-    weeks_per_month = 4.33
-    days_per_week = 5
-    hours_per_month = request.hours_per_week * weeks_per_month
+    # WEEKLY calculations (travel contracts pay weekly)
+    weekly_revenue = request.bill_rate * request.hours_per_week
     
-    # Monthly stipend calculations
-    monthly_lodging_stipend = daily_lodging * 30
-    monthly_mie_stipend = daily_mie * days_per_week * weeks_per_month
+    # Your gross margin
+    weekly_gross_margin = weekly_revenue * request.gross_margin_pct
+    after_margin = weekly_revenue - weekly_gross_margin
     
-    # Gross calculations
-    gross_monthly_revenue = request.bill_rate * hours_per_month
+    # Employer burden (FICA, FUTA, SUTA, workers comp, liability)
+    weekly_burden = after_margin * request.burden_pct
     
-    # Your margin
-    gross_margin_amount = gross_monthly_revenue * request.gross_margin_pct
-    after_margin = gross_monthly_revenue - gross_margin_amount
-    
-    # Employer burden
-    burden_amount = after_margin * request.burden_pct
-    total_available_for_pay = after_margin - burden_amount
+    # Total available for candidate compensation
+    total_available = after_margin - weekly_burden
     
     if request.is_travel_contract:
-        # Travel contract: Split into taxable + stipends
-        total_monthly_stipends = monthly_lodging_stipend + monthly_mie_stipend
-        taxable_monthly = total_available_for_pay - total_monthly_stipends
+        # TRAVEL CONTRACT: Maximize tax-free stipends per GSA
         
-        # Minimum wage check
+        # GSA max weekly stipends
+        max_weekly_housing = daily_lodging * 7  # 7 days (they need housing all week)
+        max_weekly_mie = daily_mie * 5  # 5 work days only
+        max_weekly_stipends = max_weekly_housing + max_weekly_mie
+        
+        # Taxable pay = what's left after stipends
+        weekly_taxable_pay = total_available - max_weekly_stipends
+        taxable_hourly = weekly_taxable_pay / request.hours_per_week
+        
+        # Minimum wage compliance check ($15/hr for healthcare professionals)
         min_hourly = 15.00
-        min_taxable_monthly = min_hourly * hours_per_month
         
-        if taxable_monthly < min_taxable_monthly:
-            taxable_monthly = min_taxable_monthly
-            total_monthly_stipends = total_available_for_pay - taxable_monthly
-            stipend_ratio = max(0, total_monthly_stipends / (monthly_lodging_stipend + monthly_mie_stipend))
-            monthly_lodging_stipend = monthly_lodging_stipend * stipend_ratio
-            monthly_mie_stipend = monthly_mie_stipend * stipend_ratio
+        if taxable_hourly < min_hourly:
+            # Must reduce stipends to meet minimum wage
+            weekly_taxable_pay = min_hourly * request.hours_per_week
+            remaining_for_stipends = total_available - weekly_taxable_pay
+            
+            if remaining_for_stipends > 0:
+                # Proportionally reduce both stipends
+                stipend_ratio = remaining_for_stipends / max_weekly_stipends
+                weekly_housing = max_weekly_housing * stipend_ratio
+                weekly_mie = max_weekly_mie * stipend_ratio
+            else:
+                # No room for stipends at all
+                weekly_housing = 0
+                weekly_mie = 0
+            
+            taxable_hourly = min_hourly
+        else:
+            # Full GSA stipends can be paid
+            weekly_housing = max_weekly_housing
+            weekly_mie = max_weekly_mie
         
-        taxable_hourly = taxable_monthly / hours_per_month
-        total_monthly_value = taxable_monthly + monthly_lodging_stipend + monthly_mie_stipend
-        effective_hourly = total_monthly_value / hours_per_month
+        # Total weekly compensation
+        total_weekly_pay = weekly_taxable_pay + weekly_housing + weekly_mie
+        effective_hourly = total_weekly_pay / request.hours_per_week
         
         return {
             "contract_type": "Travel",
             "location": f"{request.city}, {request.state}",
             "bill_rate": round(request.bill_rate, 2),
+            "hours_per_week": request.hours_per_week,
             "gross_margin_pct": request.gross_margin_pct,
             "burden_pct": request.burden_pct,
-            "hours_per_week": request.hours_per_week,
             
+            # GSA Rates
             "gsa_daily_lodging": daily_lodging,
             "gsa_daily_mie": daily_mie,
+            "gsa_max_weekly_housing": round(max_weekly_housing, 2),
+            "gsa_max_weekly_mie": round(max_weekly_mie, 2),
             
+            # WEEKLY PAY BREAKDOWN (Primary Output)
+            "weekly_taxable_pay": round(weekly_taxable_pay, 2),
+            "weekly_housing_stipend": round(weekly_housing, 2),
+            "weekly_mie_stipend": round(weekly_mie, 2),
+            "total_weekly_pay": round(total_weekly_pay, 2),
+            
+            # Hourly equivalents
             "taxable_hourly_rate": round(taxable_hourly, 2),
-            "monthly_housing_stipend": round(monthly_lodging_stipend, 2),
-            "monthly_mie_stipend": round(monthly_mie_stipend, 2),
-            "weekly_housing_stipend": round(monthly_lodging_stipend / weeks_per_month, 2),
-            "weekly_mie_stipend": round(monthly_mie_stipend / weeks_per_month, 2),
-            
             "effective_hourly_rate": round(effective_hourly, 2),
-            "total_weekly_pay": round(total_monthly_value / weeks_per_month, 2),
-            "total_monthly_pay": round(total_monthly_value, 2),
             
-            "gross_margin_monthly": round(gross_margin_amount, 2),
-            "burden_monthly": round(burden_amount, 2),
+            # Your margins (weekly)
+            "weekly_gross_margin": round(weekly_gross_margin, 2),
+            "weekly_burden": round(weekly_burden, 2),
+            "weekly_revenue": round(weekly_revenue, 2),
         }
     
     else:
-        # Local contract: Fully taxable
-        taxable_hourly = total_available_for_pay / hours_per_month
+        # LOCAL CONTRACT: Fully taxable, no stipends
+        taxable_hourly = total_available / request.hours_per_week
+        total_weekly_pay = total_available
         
         return {
             "contract_type": "Local",
             "location": f"{request.city}, {request.state}",
             "bill_rate": round(request.bill_rate, 2),
+            "hours_per_week": request.hours_per_week,
             "gross_margin_pct": request.gross_margin_pct,
             "burden_pct": request.burden_pct,
-            "hours_per_week": request.hours_per_week,
             
+            # GSA Rates (for reference)
             "gsa_daily_lodging": daily_lodging,
             "gsa_daily_mie": daily_mie,
+            "gsa_max_weekly_housing": 0,
+            "gsa_max_weekly_mie": 0,
             
-            "taxable_hourly_rate": round(taxable_hourly, 2),
-            "monthly_housing_stipend": 0,
-            "monthly_mie_stipend": 0,
+            # WEEKLY PAY BREAKDOWN
+            "weekly_taxable_pay": round(total_weekly_pay, 2),
             "weekly_housing_stipend": 0,
             "weekly_mie_stipend": 0,
+            "total_weekly_pay": round(total_weekly_pay, 2),
             
+            # Hourly equivalents
+            "taxable_hourly_rate": round(taxable_hourly, 2),
             "effective_hourly_rate": round(taxable_hourly, 2),
-            "total_weekly_pay": round(taxable_hourly * request.hours_per_week, 2),
-            "total_monthly_pay": round(total_available_for_pay, 2),
             
-            "gross_margin_monthly": round(gross_margin_amount, 2),
-            "burden_monthly": round(burden_amount, 2),
+            # Your margins (weekly)
+            "weekly_gross_margin": round(weekly_gross_margin, 2),
+            "weekly_burden": round(weekly_burden, 2),
+            "weekly_revenue": round(weekly_revenue, 2),
         }
 
 
@@ -853,4 +882,3 @@ def calculate_pay_package(request: PayCalculatorRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)
-
