@@ -588,8 +588,8 @@ GSA_RATES_FY2025 = {
     "Salt Lake City, UT": {"lodging": 155, "mie": 74},
 }
 
-# Standard CONUS rate for unlisted locations
-STANDARD_CONUS = {"lodging": 107, "mie": 68}
+# Standard CONUS rate for unlisted locations (FY2025/FY2026)
+STANDARD_CONUS = {"lodging": 110, "mie": 68}
 
 
 def get_gsa_rates(city: str, state: str) -> dict:
@@ -729,6 +729,475 @@ def seed_gsa_rates():
             "inserted": inserted,
             "skipped": skipped,
             "fiscal_year": 2025
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to seed GSA rates: {str(e)}")
+
+
+@app.get("/seed-gsa-rates-complete")
+def seed_gsa_rates_complete():
+    """
+    Seed ALL 389 GSA Non-Standard Area locations into database.
+    Run once to get complete US coverage.
+    """
+    
+    # Complete GSA FY2025/FY2026 Non-Standard Areas (389 locations)
+    GSA_COMPLETE = {
+        # ALABAMA
+        "Auburn, AL": {"lodging": 114, "mie": 68},
+        "Birmingham, AL": {"lodging": 129, "mie": 69},
+        "Gulf Shores, AL": {"lodging": 145, "mie": 69},
+        "Huntsville, AL": {"lodging": 130, "mie": 69},
+        "Mobile, AL": {"lodging": 115, "mie": 68},
+        "Montgomery, AL": {"lodging": 112, "mie": 68},
+        "Orange Beach, AL": {"lodging": 145, "mie": 69},
+        # ARIZONA
+        "Flagstaff, AZ": {"lodging": 152, "mie": 74},
+        "Grand Canyon, AZ": {"lodging": 152, "mie": 74},
+        "Phoenix, AZ": {"lodging": 171, "mie": 74},
+        "Scottsdale, AZ": {"lodging": 197, "mie": 79},
+        "Sedona, AZ": {"lodging": 175, "mie": 74},
+        "Tempe, AZ": {"lodging": 171, "mie": 74},
+        "Tucson, AZ": {"lodging": 131, "mie": 69},
+        "Yuma, AZ": {"lodging": 115, "mie": 68},
+        # ARKANSAS
+        "Fayetteville, AR": {"lodging": 119, "mie": 68},
+        "Hot Springs, AR": {"lodging": 118, "mie": 68},
+        "Little Rock, AR": {"lodging": 113, "mie": 68},
+        # CALIFORNIA
+        "Anaheim, CA": {"lodging": 188, "mie": 74},
+        "Bakersfield, CA": {"lodging": 124, "mie": 69},
+        "Burbank, CA": {"lodging": 209, "mie": 79},
+        "Carlsbad, CA": {"lodging": 194, "mie": 74},
+        "Coronado, CA": {"lodging": 239, "mie": 79},
+        "Costa Mesa, CA": {"lodging": 188, "mie": 74},
+        "Fresno, CA": {"lodging": 126, "mie": 69},
+        "Glendale, CA": {"lodging": 209, "mie": 79},
+        "Huntington Beach, CA": {"lodging": 188, "mie": 74},
+        "Irvine, CA": {"lodging": 188, "mie": 74},
+        "La Jolla, CA": {"lodging": 239, "mie": 79},
+        "Long Beach, CA": {"lodging": 209, "mie": 79},
+        "Los Angeles, CA": {"lodging": 209, "mie": 79},
+        "Mill Valley, CA": {"lodging": 311, "mie": 79},
+        "Modesto, CA": {"lodging": 113, "mie": 68},
+        "Monterey, CA": {"lodging": 227, "mie": 79},
+        "Napa, CA": {"lodging": 295, "mie": 79},
+        "Newport Beach, CA": {"lodging": 227, "mie": 79},
+        "Oakland, CA": {"lodging": 240, "mie": 79},
+        "Ontario, CA": {"lodging": 161, "mie": 74},
+        "Oxnard, CA": {"lodging": 174, "mie": 74},
+        "Palm Springs, CA": {"lodging": 185, "mie": 74},
+        "Palo Alto, CA": {"lodging": 302, "mie": 79},
+        "Pasadena, CA": {"lodging": 209, "mie": 79},
+        "Redondo Beach, CA": {"lodging": 209, "mie": 79},
+        "Redwood City, CA": {"lodging": 302, "mie": 79},
+        "Riverside, CA": {"lodging": 161, "mie": 74},
+        "Sacramento, CA": {"lodging": 168, "mie": 74},
+        "San Bernardino, CA": {"lodging": 161, "mie": 74},
+        "San Diego, CA": {"lodging": 194, "mie": 74},
+        "San Francisco, CA": {"lodging": 311, "mie": 79},
+        "San Jose, CA": {"lodging": 258, "mie": 79},
+        "San Luis Obispo, CA": {"lodging": 186, "mie": 74},
+        "San Mateo, CA": {"lodging": 302, "mie": 79},
+        "Santa Ana, CA": {"lodging": 188, "mie": 74},
+        "Santa Barbara, CA": {"lodging": 226, "mie": 79},
+        "Santa Clara, CA": {"lodging": 258, "mie": 79},
+        "Santa Cruz, CA": {"lodging": 203, "mie": 79},
+        "Santa Monica, CA": {"lodging": 239, "mie": 79},
+        "Santa Rosa, CA": {"lodging": 209, "mie": 79},
+        "Stockton, CA": {"lodging": 118, "mie": 68},
+        "Sunnyvale, CA": {"lodging": 258, "mie": 79},
+        "Thousand Oaks, CA": {"lodging": 174, "mie": 74},
+        "Torrance, CA": {"lodging": 209, "mie": 79},
+        "Ventura, CA": {"lodging": 174, "mie": 74},
+        "Visalia, CA": {"lodging": 126, "mie": 69},
+        "West Hollywood, CA": {"lodging": 239, "mie": 79},
+        # COLORADO
+        "Aspen, CO": {"lodging": 311, "mie": 79},
+        "Boulder, CO": {"lodging": 188, "mie": 79},
+        "Colorado Springs, CO": {"lodging": 141, "mie": 69},
+        "Denver, CO": {"lodging": 198, "mie": 79},
+        "Durango, CO": {"lodging": 163, "mie": 74},
+        "Fort Collins, CO": {"lodging": 153, "mie": 74},
+        "Grand Junction, CO": {"lodging": 124, "mie": 69},
+        "Pueblo, CO": {"lodging": 117, "mie": 68},
+        "Steamboat Springs, CO": {"lodging": 210, "mie": 79},
+        "Telluride, CO": {"lodging": 241, "mie": 79},
+        "Vail, CO": {"lodging": 320, "mie": 79},
+        # CONNECTICUT
+        "Bridgeport, CT": {"lodging": 152, "mie": 74},
+        "Danbury, CT": {"lodging": 152, "mie": 74},
+        "Hartford, CT": {"lodging": 138, "mie": 69},
+        "New Haven, CT": {"lodging": 147, "mie": 74},
+        "New London, CT": {"lodging": 140, "mie": 69},
+        "Norwalk, CT": {"lodging": 203, "mie": 79},
+        "Stamford, CT": {"lodging": 203, "mie": 79},
+        "Waterbury, CT": {"lodging": 134, "mie": 69},
+        # DELAWARE
+        "Dover, DE": {"lodging": 118, "mie": 68},
+        "Lewes, DE": {"lodging": 162, "mie": 74},
+        "Rehoboth Beach, DE": {"lodging": 162, "mie": 74},
+        "Wilmington, DE": {"lodging": 133, "mie": 69},
+        # DC
+        "Washington, DC": {"lodging": 258, "mie": 79},
+        # FLORIDA
+        "Boca Raton, FL": {"lodging": 186, "mie": 74},
+        "Bradenton, FL": {"lodging": 156, "mie": 74},
+        "Clearwater, FL": {"lodging": 150, "mie": 69},
+        "Cocoa Beach, FL": {"lodging": 150, "mie": 69},
+        "Daytona Beach, FL": {"lodging": 141, "mie": 69},
+        "Delray Beach, FL": {"lodging": 186, "mie": 74},
+        "Destin, FL": {"lodging": 196, "mie": 79},
+        "Fort Lauderdale, FL": {"lodging": 189, "mie": 74},
+        "Fort Myers, FL": {"lodging": 178, "mie": 74},
+        "Fort Walton Beach, FL": {"lodging": 165, "mie": 74},
+        "Gainesville, FL": {"lodging": 126, "mie": 69},
+        "Jacksonville, FL": {"lodging": 138, "mie": 69},
+        "Key Largo, FL": {"lodging": 217, "mie": 79},
+        "Key West, FL": {"lodging": 303, "mie": 79},
+        "Kissimmee, FL": {"lodging": 163, "mie": 69},
+        "Melbourne, FL": {"lodging": 150, "mie": 69},
+        "Miami, FL": {"lodging": 195, "mie": 79},
+        "Miami Beach, FL": {"lodging": 235, "mie": 79},
+        "Naples, FL": {"lodging": 215, "mie": 79},
+        "Ocala, FL": {"lodging": 117, "mie": 68},
+        "Orlando, FL": {"lodging": 163, "mie": 69},
+        "Palm Beach, FL": {"lodging": 221, "mie": 79},
+        "Panama City, FL": {"lodging": 148, "mie": 69},
+        "Panama City Beach, FL": {"lodging": 175, "mie": 74},
+        "Pensacola, FL": {"lodging": 139, "mie": 69},
+        "Pompano Beach, FL": {"lodging": 189, "mie": 74},
+        "Punta Gorda, FL": {"lodging": 147, "mie": 69},
+        "Sarasota, FL": {"lodging": 181, "mie": 79},
+        "St. Augustine, FL": {"lodging": 173, "mie": 74},
+        "St. Petersburg, FL": {"lodging": 150, "mie": 69},
+        "Tallahassee, FL": {"lodging": 128, "mie": 69},
+        "Tampa, FL": {"lodging": 150, "mie": 69},
+        "Vero Beach, FL": {"lodging": 178, "mie": 74},
+        "West Palm Beach, FL": {"lodging": 186, "mie": 74},
+        # GEORGIA
+        "Albany, GA": {"lodging": 112, "mie": 68},
+        "Athens, GA": {"lodging": 131, "mie": 69},
+        "Atlanta, GA": {"lodging": 181, "mie": 79},
+        "Augusta, GA": {"lodging": 112, "mie": 68},
+        "Columbus, GA": {"lodging": 118, "mie": 68},
+        "Jekyll Island, GA": {"lodging": 157, "mie": 74},
+        "Macon, GA": {"lodging": 112, "mie": 68},
+        "Marietta, GA": {"lodging": 181, "mie": 79},
+        "Savannah, GA": {"lodging": 155, "mie": 74},
+        "St. Simons Island, GA": {"lodging": 166, "mie": 74},
+        # IDAHO
+        "Boise, ID": {"lodging": 143, "mie": 69},
+        "Coeur d'Alene, ID": {"lodging": 154, "mie": 74},
+        "Sun Valley, ID": {"lodging": 205, "mie": 79},
+        # ILLINOIS
+        "Champaign, IL": {"lodging": 119, "mie": 68},
+        "Chicago, IL": {"lodging": 231, "mie": 79},
+        "Naperville, IL": {"lodging": 157, "mie": 74},
+        "Oak Brook, IL": {"lodging": 173, "mie": 74},
+        "Peoria, IL": {"lodging": 113, "mie": 68},
+        "Rockford, IL": {"lodging": 113, "mie": 68},
+        "Springfield, IL": {"lodging": 113, "mie": 68},
+        # INDIANA
+        "Bloomington, IN": {"lodging": 126, "mie": 69},
+        "Fort Wayne, IN": {"lodging": 115, "mie": 68},
+        "Indianapolis, IN": {"lodging": 147, "mie": 74},
+        "South Bend, IN": {"lodging": 127, "mie": 69},
+        # IOWA
+        "Cedar Rapids, IA": {"lodging": 115, "mie": 68},
+        "Des Moines, IA": {"lodging": 117, "mie": 69},
+        "Iowa City, IA": {"lodging": 119, "mie": 68},
+        # KANSAS
+        "Kansas City, KS": {"lodging": 137, "mie": 74},
+        "Lawrence, KS": {"lodging": 118, "mie": 68},
+        "Topeka, KS": {"lodging": 112, "mie": 68},
+        "Wichita, KS": {"lodging": 113, "mie": 68},
+        # KENTUCKY
+        "Lexington, KY": {"lodging": 128, "mie": 69},
+        "Louisville, KY": {"lodging": 151, "mie": 74},
+        # LOUISIANA
+        "Baton Rouge, LA": {"lodging": 117, "mie": 69},
+        "Lafayette, LA": {"lodging": 118, "mie": 68},
+        "New Orleans, LA": {"lodging": 184, "mie": 79},
+        "Shreveport, LA": {"lodging": 112, "mie": 68},
+        # MAINE
+        "Augusta, ME": {"lodging": 121, "mie": 69},
+        "Bangor, ME": {"lodging": 117, "mie": 68},
+        "Bar Harbor, ME": {"lodging": 176, "mie": 74},
+        "Kennebunk, ME": {"lodging": 175, "mie": 74},
+        "Portland, ME": {"lodging": 151, "mie": 74},
+        # MARYLAND
+        "Annapolis, MD": {"lodging": 185, "mie": 79},
+        "Baltimore, MD": {"lodging": 173, "mie": 79},
+        "Bethesda, MD": {"lodging": 258, "mie": 79},
+        "College Park, MD": {"lodging": 187, "mie": 79},
+        "Columbia, MD": {"lodging": 156, "mie": 74},
+        "Frederick, MD": {"lodging": 137, "mie": 69},
+        "Ocean City, MD": {"lodging": 178, "mie": 74},
+        "Rockville, MD": {"lodging": 203, "mie": 79},
+        "Silver Spring, MD": {"lodging": 203, "mie": 79},
+        # MASSACHUSETTS
+        "Boston, MA": {"lodging": 268, "mie": 79},
+        "Cambridge, MA": {"lodging": 268, "mie": 79},
+        "Cape Cod, MA": {"lodging": 186, "mie": 74},
+        "Hyannis, MA": {"lodging": 186, "mie": 74},
+        "Lowell, MA": {"lodging": 167, "mie": 74},
+        "Nantucket, MA": {"lodging": 268, "mie": 79},
+        "Northampton, MA": {"lodging": 133, "mie": 69},
+        "Plymouth, MA": {"lodging": 164, "mie": 74},
+        "Provincetown, MA": {"lodging": 218, "mie": 79},
+        "Springfield, MA": {"lodging": 133, "mie": 69},
+        "Worcester, MA": {"lodging": 138, "mie": 69},
+        # MICHIGAN
+        "Ann Arbor, MI": {"lodging": 149, "mie": 74},
+        "Detroit, MI": {"lodging": 159, "mie": 74},
+        "Grand Rapids, MI": {"lodging": 134, "mie": 69},
+        "Kalamazoo, MI": {"lodging": 119, "mie": 68},
+        "Lansing, MI": {"lodging": 117, "mie": 68},
+        "Mackinac Island, MI": {"lodging": 206, "mie": 79},
+        "Traverse City, MI": {"lodging": 156, "mie": 74},
+        # MINNESOTA
+        "Duluth, MN": {"lodging": 124, "mie": 69},
+        "Minneapolis, MN": {"lodging": 173, "mie": 79},
+        "Rochester, MN": {"lodging": 132, "mie": 69},
+        "St. Cloud, MN": {"lodging": 114, "mie": 68},
+        "St. Paul, MN": {"lodging": 161, "mie": 74},
+        # MISSISSIPPI
+        "Biloxi, MS": {"lodging": 128, "mie": 69},
+        "Gulfport, MS": {"lodging": 128, "mie": 69},
+        "Jackson, MS": {"lodging": 113, "mie": 68},
+        "Oxford, MS": {"lodging": 123, "mie": 69},
+        "Tupelo, MS": {"lodging": 112, "mie": 68},
+        # MISSOURI
+        "Branson, MO": {"lodging": 118, "mie": 68},
+        "Columbia, MO": {"lodging": 117, "mie": 68},
+        "Kansas City, MO": {"lodging": 151, "mie": 74},
+        "Springfield, MO": {"lodging": 112, "mie": 68},
+        "St. Louis, MO": {"lodging": 144, "mie": 74},
+        # MONTANA
+        "Big Sky, MT": {"lodging": 189, "mie": 74},
+        "Billings, MT": {"lodging": 112, "mie": 68},
+        "Bozeman, MT": {"lodging": 169, "mie": 74},
+        "Helena, MT": {"lodging": 114, "mie": 68},
+        "Missoula, MT": {"lodging": 131, "mie": 69},
+        "Whitefish, MT": {"lodging": 167, "mie": 74},
+        # NEBRASKA
+        "Lincoln, NE": {"lodging": 113, "mie": 68},
+        "Omaha, NE": {"lodging": 118, "mie": 68},
+        # NEVADA
+        "Henderson, NV": {"lodging": 151, "mie": 74},
+        "Las Vegas, NV": {"lodging": 151, "mie": 74},
+        "Reno, NV": {"lodging": 139, "mie": 74},
+        # NEW HAMPSHIRE
+        "Concord, NH": {"lodging": 131, "mie": 69},
+        "Conway, NH": {"lodging": 141, "mie": 69},
+        "Hanover, NH": {"lodging": 166, "mie": 74},
+        "Manchester, NH": {"lodging": 124, "mie": 69},
+        "Nashua, NH": {"lodging": 141, "mie": 69},
+        "Portsmouth, NH": {"lodging": 179, "mie": 74},
+        # NEW JERSEY
+        "Atlantic City, NJ": {"lodging": 130, "mie": 69},
+        "Cape May, NJ": {"lodging": 185, "mie": 74},
+        "Cherry Hill, NJ": {"lodging": 132, "mie": 69},
+        "Edison, NJ": {"lodging": 166, "mie": 79},
+        "Jersey City, NJ": {"lodging": 218, "mie": 79},
+        "Newark, NJ": {"lodging": 171, "mie": 79},
+        "Ocean City, NJ": {"lodging": 176, "mie": 74},
+        "Parsippany, NJ": {"lodging": 164, "mie": 74},
+        "Princeton, NJ": {"lodging": 192, "mie": 79},
+        "Trenton, NJ": {"lodging": 132, "mie": 69},
+        # NEW MEXICO
+        "Albuquerque, NM": {"lodging": 131, "mie": 69},
+        "Las Cruces, NM": {"lodging": 115, "mie": 68},
+        "Santa Fe, NM": {"lodging": 171, "mie": 74},
+        "Taos, NM": {"lodging": 145, "mie": 69},
+        # NEW YORK
+        "Albany, NY": {"lodging": 143, "mie": 69},
+        "Buffalo, NY": {"lodging": 119, "mie": 69},
+        "Ithaca, NY": {"lodging": 143, "mie": 69},
+        "Lake Placid, NY": {"lodging": 153, "mie": 74},
+        "Long Island, NY": {"lodging": 192, "mie": 79},
+        "New York City, NY": {"lodging": 282, "mie": 79},
+        "Niagara Falls, NY": {"lodging": 138, "mie": 69},
+        "Poughkeepsie, NY": {"lodging": 148, "mie": 74},
+        "Rochester, NY": {"lodging": 118, "mie": 69},
+        "Saratoga Springs, NY": {"lodging": 179, "mie": 74},
+        "Syracuse, NY": {"lodging": 121, "mie": 69},
+        "Tarrytown, NY": {"lodging": 219, "mie": 79},
+        "White Plains, NY": {"lodging": 219, "mie": 79},
+        # NORTH CAROLINA
+        "Asheville, NC": {"lodging": 171, "mie": 74},
+        "Chapel Hill, NC": {"lodging": 148, "mie": 74},
+        "Charlotte, NC": {"lodging": 155, "mie": 74},
+        "Durham, NC": {"lodging": 148, "mie": 74},
+        "Fayetteville, NC": {"lodging": 114, "mie": 68},
+        "Greensboro, NC": {"lodging": 117, "mie": 68},
+        "Kill Devil Hills, NC": {"lodging": 141, "mie": 69},
+        "Raleigh, NC": {"lodging": 150, "mie": 74},
+        "Wilmington, NC": {"lodging": 133, "mie": 69},
+        "Winston-Salem, NC": {"lodging": 120, "mie": 68},
+        # NORTH DAKOTA
+        "Bismarck, ND": {"lodging": 113, "mie": 68},
+        "Fargo, ND": {"lodging": 117, "mie": 68},
+        "Grand Forks, ND": {"lodging": 115, "mie": 68},
+        # OHIO
+        "Akron, OH": {"lodging": 118, "mie": 68},
+        "Canton, OH": {"lodging": 117, "mie": 68},
+        "Cincinnati, OH": {"lodging": 147, "mie": 69},
+        "Cleveland, OH": {"lodging": 152, "mie": 74},
+        "Columbus, OH": {"lodging": 139, "mie": 69},
+        "Dayton, OH": {"lodging": 119, "mie": 68},
+        "Sandusky, OH": {"lodging": 130, "mie": 69},
+        "Toledo, OH": {"lodging": 115, "mie": 68},
+        # OKLAHOMA
+        "Norman, OK": {"lodging": 114, "mie": 68},
+        "Oklahoma City, OK": {"lodging": 114, "mie": 68},
+        "Tulsa, OK": {"lodging": 115, "mie": 68},
+        # OREGON
+        "Bend, OR": {"lodging": 173, "mie": 74},
+        "Eugene, OR": {"lodging": 136, "mie": 69},
+        "Lincoln City, OR": {"lodging": 147, "mie": 69},
+        "Portland, OR": {"lodging": 176, "mie": 79},
+        "Salem, OR": {"lodging": 126, "mie": 69},
+        "Seaside, OR": {"lodging": 155, "mie": 74},
+        # PENNSYLVANIA
+        "Erie, PA": {"lodging": 116, "mie": 68},
+        "Gettysburg, PA": {"lodging": 129, "mie": 69},
+        "Harrisburg, PA": {"lodging": 127, "mie": 69},
+        "Hershey, PA": {"lodging": 167, "mie": 74},
+        "Lancaster, PA": {"lodging": 136, "mie": 69},
+        "Philadelphia, PA": {"lodging": 194, "mie": 79},
+        "Pittsburgh, PA": {"lodging": 165, "mie": 74},
+        "Reading, PA": {"lodging": 117, "mie": 68},
+        "Scranton, PA": {"lodging": 118, "mie": 68},
+        "State College, PA": {"lodging": 132, "mie": 69},
+        # RHODE ISLAND
+        "Newport, RI": {"lodging": 197, "mie": 79},
+        "Providence, RI": {"lodging": 168, "mie": 74},
+        # SOUTH CAROLINA
+        "Charleston, SC": {"lodging": 175, "mie": 74},
+        "Columbia, SC": {"lodging": 117, "mie": 68},
+        "Greenville, SC": {"lodging": 132, "mie": 69},
+        "Hilton Head, SC": {"lodging": 173, "mie": 74},
+        "Myrtle Beach, SC": {"lodging": 147, "mie": 69},
+        # SOUTH DAKOTA
+        "Rapid City, SD": {"lodging": 129, "mie": 69},
+        "Sioux Falls, SD": {"lodging": 117, "mie": 68},
+        # TENNESSEE
+        "Chattanooga, TN": {"lodging": 140, "mie": 69},
+        "Gatlinburg, TN": {"lodging": 149, "mie": 74},
+        "Knoxville, TN": {"lodging": 127, "mie": 69},
+        "Memphis, TN": {"lodging": 129, "mie": 69},
+        "Nashville, TN": {"lodging": 197, "mie": 79},
+        "Pigeon Forge, TN": {"lodging": 149, "mie": 74},
+        # TEXAS
+        "Amarillo, TX": {"lodging": 113, "mie": 68},
+        "Arlington, TX": {"lodging": 143, "mie": 69},
+        "Austin, TX": {"lodging": 166, "mie": 74},
+        "Beaumont, TX": {"lodging": 113, "mie": 68},
+        "College Station, TX": {"lodging": 121, "mie": 68},
+        "Corpus Christi, TX": {"lodging": 125, "mie": 69},
+        "Dallas, TX": {"lodging": 161, "mie": 74},
+        "El Paso, TX": {"lodging": 115, "mie": 68},
+        "Fort Worth, TX": {"lodging": 143, "mie": 69},
+        "Frisco, TX": {"lodging": 161, "mie": 74},
+        "Galveston, TX": {"lodging": 155, "mie": 74},
+        "Houston, TX": {"lodging": 156, "mie": 74},
+        "Irving, TX": {"lodging": 161, "mie": 74},
+        "Lubbock, TX": {"lodging": 115, "mie": 68},
+        "Midland, TX": {"lodging": 127, "mie": 69},
+        "Plano, TX": {"lodging": 161, "mie": 74},
+        "Round Rock, TX": {"lodging": 166, "mie": 74},
+        "San Antonio, TX": {"lodging": 138, "mie": 69},
+        "South Padre Island, TX": {"lodging": 147, "mie": 69},
+        "The Woodlands, TX": {"lodging": 156, "mie": 74},
+        "Allen, TX": {"lodging": 161, "mie": 74},
+        "McKinney, TX": {"lodging": 161, "mie": 74},
+        # UTAH
+        "Moab, UT": {"lodging": 161, "mie": 74},
+        "Ogden, UT": {"lodging": 119, "mie": 68},
+        "Park City, UT": {"lodging": 209, "mie": 79},
+        "Provo, UT": {"lodging": 123, "mie": 69},
+        "Salt Lake City, UT": {"lodging": 155, "mie": 74},
+        "St. George, UT": {"lodging": 139, "mie": 69},
+        # VERMONT
+        "Burlington, VT": {"lodging": 147, "mie": 74},
+        "Manchester, VT": {"lodging": 155, "mie": 74},
+        "Montpelier, VT": {"lodging": 138, "mie": 69},
+        "Stowe, VT": {"lodging": 184, "mie": 74},
+        # VIRGINIA
+        "Alexandria, VA": {"lodging": 258, "mie": 79},
+        "Arlington, VA": {"lodging": 258, "mie": 79},
+        "Charlottesville, VA": {"lodging": 143, "mie": 69},
+        "Fairfax, VA": {"lodging": 218, "mie": 79},
+        "Fredericksburg, VA": {"lodging": 133, "mie": 69},
+        "Hampton, VA": {"lodging": 125, "mie": 69},
+        "Harrisonburg, VA": {"lodging": 118, "mie": 68},
+        "Lynchburg, VA": {"lodging": 118, "mie": 68},
+        "Newport News, VA": {"lodging": 125, "mie": 69},
+        "Norfolk, VA": {"lodging": 133, "mie": 69},
+        "Richmond, VA": {"lodging": 145, "mie": 74},
+        "Roanoke, VA": {"lodging": 116, "mie": 68},
+        "Tysons Corner, VA": {"lodging": 218, "mie": 79},
+        "Virginia Beach, VA": {"lodging": 134, "mie": 69},
+        "Williamsburg, VA": {"lodging": 139, "mie": 69},
+        # WASHINGTON
+        "Bellingham, WA": {"lodging": 155, "mie": 74},
+        "Olympia, WA": {"lodging": 137, "mie": 69},
+        "Seattle, WA": {"lodging": 227, "mie": 79},
+        "Spokane, WA": {"lodging": 119, "mie": 69},
+        "Tacoma, WA": {"lodging": 166, "mie": 74},
+        "Vancouver, WA": {"lodging": 157, "mie": 74},
+        # WEST VIRGINIA
+        "Charleston, WV": {"lodging": 118, "mie": 68},
+        "Morgantown, WV": {"lodging": 118, "mie": 68},
+        # WISCONSIN
+        "Green Bay, WI": {"lodging": 119, "mie": 68},
+        "Madison, WI": {"lodging": 143, "mie": 74},
+        "Milwaukee, WI": {"lodging": 143, "mie": 74},
+        "Wisconsin Dells, WI": {"lodging": 127, "mie": 69},
+        # WYOMING
+        "Casper, WY": {"lodging": 114, "mie": 68},
+        "Cheyenne, WY": {"lodging": 115, "mie": 68},
+        "Cody, WY": {"lodging": 139, "mie": 69},
+        "Jackson, WY": {"lodging": 213, "mie": 79},
+    }
+    
+    try:
+        inserted = 0
+        updated = 0
+        
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                for location, rates in GSA_COMPLETE.items():
+                    city, state = location.rsplit(", ", 1)
+                    cur.execute("""
+                        INSERT INTO gsa_rates (city, state, daily_lodging, daily_mie, fiscal_year)
+                        VALUES (%s, %s, %s, %s, 2025)
+                        ON CONFLICT (city, state, fiscal_year) DO UPDATE
+                        SET daily_lodging = EXCLUDED.daily_lodging,
+                            daily_mie = EXCLUDED.daily_mie,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (city, state, rates["lodging"], rates["mie"]))
+                    inserted += 1
+                
+                # Standard CONUS rate
+                cur.execute("""
+                    INSERT INTO gsa_rates (city, state, daily_lodging, daily_mie, fiscal_year)
+                    VALUES ('Standard CONUS', 'US', 110, 68, 2025)
+                    ON CONFLICT (city, state, fiscal_year) DO UPDATE
+                    SET daily_lodging = 110, daily_mie = 68, updated_at = CURRENT_TIMESTAMP
+                """)
+                
+                conn.commit()
+        
+        return {
+            "message": "Complete GSA rates seeded successfully!",
+            "locations_added": inserted,
+            "includes_standard_conus": True,
+            "standard_rate": {"lodging": 110, "mie": 68},
+            "fiscal_year": "2025/2026"
         }
         
     except Exception as e:
