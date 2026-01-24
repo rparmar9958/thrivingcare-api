@@ -10,12 +10,15 @@ Endpoints:
 - GET /api/jobs/count - Get total active jobs
 - GET /api/jobs - Get job listings (paginated)
 - GET /run-migrations - Run database migrations
+- POST /api/calculate-pay - Calculate pay package from bill rate
+- GET /api/gsa-rates - Get GSA per diem rates for a location
 """
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, List
+from decimal import Decimal
 import os
 from datetime import datetime
 import psycopg2
@@ -185,6 +188,20 @@ def run_migrations():
             question_type VARCHAR(50),
             score INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""",
+        
+        # GSA PER DIEM RATES TABLE (NEW)
+        """CREATE TABLE IF NOT EXISTS gsa_rates (
+            id SERIAL PRIMARY KEY,
+            city VARCHAR(100) NOT NULL,
+            state VARCHAR(2) NOT NULL,
+            county VARCHAR(100),
+            daily_lodging DECIMAL(10,2) NOT NULL,
+            daily_mie DECIMAL(10,2) NOT NULL,
+            fiscal_year INTEGER NOT NULL DEFAULT 2025,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(city, state, fiscal_year)
         )""",
     ]
     
@@ -451,9 +468,389 @@ def get_jobs(
 
 
 # ============================================================================
+# GSA PER DIEM RATES & PAY CALCULATOR
+# ============================================================================
+
+# GSA Per Diem Rates FY2025 - Key Locations
+GSA_RATES_FY2025 = {
+    # TEXAS
+    "Austin, TX": {"lodging": 166, "mie": 74},
+    "Dallas, TX": {"lodging": 161, "mie": 74},
+    "Fort Worth, TX": {"lodging": 143, "mie": 69},
+    "Houston, TX": {"lodging": 156, "mie": 74},
+    "San Antonio, TX": {"lodging": 138, "mie": 69},
+    "El Paso, TX": {"lodging": 107, "mie": 68},
+    "Plano, TX": {"lodging": 161, "mie": 74},
+    "Irving, TX": {"lodging": 161, "mie": 74},
+    "Arlington, TX": {"lodging": 143, "mie": 69},
+    "Frisco, TX": {"lodging": 161, "mie": 74},
+    "McKinney, TX": {"lodging": 161, "mie": 74},
+    "Allen, TX": {"lodging": 161, "mie": 74},
+    
+    # CALIFORNIA
+    "Los Angeles, CA": {"lodging": 209, "mie": 79},
+    "San Francisco, CA": {"lodging": 311, "mie": 79},
+    "San Diego, CA": {"lodging": 194, "mie": 74},
+    "Sacramento, CA": {"lodging": 168, "mie": 74},
+    "San Jose, CA": {"lodging": 258, "mie": 79},
+    "Fresno, CA": {"lodging": 126, "mie": 69},
+    "Oakland, CA": {"lodging": 240, "mie": 79},
+    "Irvine, CA": {"lodging": 188, "mie": 74},
+    "Anaheim, CA": {"lodging": 188, "mie": 74},
+    
+    # FLORIDA
+    "Miami, FL": {"lodging": 195, "mie": 79},
+    "Orlando, FL": {"lodging": 163, "mie": 69},
+    "Tampa, FL": {"lodging": 150, "mie": 69},
+    "Jacksonville, FL": {"lodging": 138, "mie": 69},
+    "Fort Lauderdale, FL": {"lodging": 189, "mie": 74},
+    
+    # NEW YORK
+    "New York City, NY": {"lodging": 282, "mie": 79},
+    "Buffalo, NY": {"lodging": 119, "mie": 69},
+    "Albany, NY": {"lodging": 143, "mie": 69},
+    
+    # ILLINOIS
+    "Chicago, IL": {"lodging": 231, "mie": 79},
+    "Springfield, IL": {"lodging": 107, "mie": 68},
+    
+    # PENNSYLVANIA
+    "Philadelphia, PA": {"lodging": 194, "mie": 79},
+    "Pittsburgh, PA": {"lodging": 165, "mie": 74},
+    
+    # OHIO
+    "Columbus, OH": {"lodging": 139, "mie": 69},
+    "Cleveland, OH": {"lodging": 152, "mie": 74},
+    "Cincinnati, OH": {"lodging": 147, "mie": 69},
+    
+    # GEORGIA
+    "Atlanta, GA": {"lodging": 181, "mie": 79},
+    "Savannah, GA": {"lodging": 155, "mie": 74},
+    
+    # NORTH CAROLINA
+    "Charlotte, NC": {"lodging": 155, "mie": 74},
+    "Raleigh, NC": {"lodging": 150, "mie": 74},
+    
+    # MICHIGAN
+    "Detroit, MI": {"lodging": 159, "mie": 74},
+    "Grand Rapids, MI": {"lodging": 134, "mie": 69},
+    
+    # ARIZONA
+    "Phoenix, AZ": {"lodging": 171, "mie": 74},
+    "Tucson, AZ": {"lodging": 131, "mie": 69},
+    "Scottsdale, AZ": {"lodging": 197, "mie": 79},
+    
+    # COLORADO
+    "Denver, CO": {"lodging": 198, "mie": 79},
+    "Colorado Springs, CO": {"lodging": 141, "mie": 69},
+    
+    # WASHINGTON
+    "Seattle, WA": {"lodging": 227, "mie": 79},
+    "Tacoma, WA": {"lodging": 166, "mie": 74},
+    
+    # MASSACHUSETTS
+    "Boston, MA": {"lodging": 268, "mie": 79},
+    "Cambridge, MA": {"lodging": 268, "mie": 79},
+    
+    # VIRGINIA / DC / MARYLAND
+    "Washington, DC": {"lodging": 258, "mie": 79},
+    "Arlington, VA": {"lodging": 258, "mie": 79},
+    "Baltimore, MD": {"lodging": 173, "mie": 79},
+    
+    # NEW JERSEY
+    "Newark, NJ": {"lodging": 171, "mie": 79},
+    "Jersey City, NJ": {"lodging": 218, "mie": 79},
+    
+    # TENNESSEE
+    "Nashville, TN": {"lodging": 197, "mie": 79},
+    "Memphis, TN": {"lodging": 129, "mie": 69},
+    
+    # MINNESOTA
+    "Minneapolis, MN": {"lodging": 173, "mie": 79},
+    
+    # OREGON
+    "Portland, OR": {"lodging": 176, "mie": 79},
+    
+    # INDIANA
+    "Indianapolis, IN": {"lodging": 147, "mie": 74},
+    
+    # MISSOURI
+    "Kansas City, MO": {"lodging": 151, "mie": 74},
+    "St. Louis, MO": {"lodging": 144, "mie": 74},
+    
+    # LOUISIANA
+    "New Orleans, LA": {"lodging": 184, "mie": 79},
+    
+    # NEVADA
+    "Las Vegas, NV": {"lodging": 151, "mie": 74},
+    
+    # UTAH
+    "Salt Lake City, UT": {"lodging": 155, "mie": 74},
+}
+
+# Standard CONUS rate for unlisted locations
+STANDARD_CONUS = {"lodging": 107, "mie": 68}
+
+
+def get_gsa_rates(city: str, state: str) -> dict:
+    """Get GSA per diem rates for a location. Queries database first, falls back to hardcoded."""
+    
+    # Try database first
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Try exact match
+                cur.execute("""
+                    SELECT daily_lodging, daily_mie FROM gsa_rates 
+                    WHERE LOWER(city) = LOWER(%s) AND LOWER(state) = LOWER(%s) 
+                    AND fiscal_year = 2025
+                """, (city, state))
+                result = cur.fetchone()
+                
+                if result:
+                    return {"lodging": float(result["daily_lodging"]), "mie": float(result["daily_mie"])}
+                
+                # Try standard CONUS from database
+                cur.execute("""
+                    SELECT daily_lodging, daily_mie FROM gsa_rates 
+                    WHERE city = 'Standard CONUS' AND fiscal_year = 2025
+                """)
+                result = cur.fetchone()
+                
+                if result:
+                    return {"lodging": float(result["daily_lodging"]), "mie": float(result["daily_mie"])}
+    except Exception as e:
+        print(f"Database lookup failed, using hardcoded rates: {e}")
+    
+    # Fallback to hardcoded rates
+    location_key = f"{city}, {state}"
+    if location_key in GSA_RATES_FY2025:
+        return GSA_RATES_FY2025[location_key]
+    
+    # Try case-insensitive
+    for key, rates in GSA_RATES_FY2025.items():
+        if key.lower() == location_key.lower():
+            return rates
+    
+    return STANDARD_CONUS
+
+
+class PayCalculatorRequest(BaseModel):
+    bill_rate: float
+    city: str
+    state: str
+    hours_per_week: int = 40
+    is_travel_contract: bool = True
+    gross_margin_pct: float = 0.20
+    burden_pct: float = 0.20
+
+
+@app.get("/api/gsa-rates")
+def get_gsa_rates_endpoint(city: str, state: str):
+    """Get GSA per diem rates for a specific location"""
+    rates = get_gsa_rates(city, state)
+    location_key = f"{city}, {state}"
+    is_standard = location_key not in GSA_RATES_FY2025
+    
+    return {
+        "location": location_key,
+        "daily_lodging": rates["lodging"],
+        "daily_mie": rates["mie"],
+        "monthly_lodging": rates["lodging"] * 30,
+        "monthly_mie": rates["mie"] * 21.65,  # ~21.65 work days per month
+        "is_standard_rate": is_standard,
+        "fiscal_year": 2025
+    }
+
+
+@app.get("/api/gsa-rates/all")
+def get_all_gsa_rates():
+    """Get all GSA per diem rates"""
+    rates_list = []
+    for location, rates in GSA_RATES_FY2025.items():
+        city, state = location.rsplit(", ", 1)
+        rates_list.append({
+            "city": city,
+            "state": state,
+            "daily_lodging": rates["lodging"],
+            "daily_mie": rates["mie"]
+        })
+    
+    return {
+        "rates": sorted(rates_list, key=lambda x: (x["state"], x["city"])),
+        "count": len(rates_list),
+        "standard_rate": STANDARD_CONUS,
+        "fiscal_year": 2025
+    }
+
+
+@app.get("/seed-gsa-rates")
+def seed_gsa_rates():
+    """
+    One-time endpoint to populate GSA rates into database.
+    Run once after migrations, then rates are stored locally.
+    """
+    try:
+        inserted = 0
+        skipped = 0
+        
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                for location, rates in GSA_RATES_FY2025.items():
+                    city, state = location.rsplit(", ", 1)
+                    try:
+                        cur.execute("""
+                            INSERT INTO gsa_rates (city, state, daily_lodging, daily_mie, fiscal_year)
+                            VALUES (%s, %s, %s, %s, 2025)
+                            ON CONFLICT (city, state, fiscal_year) DO UPDATE
+                            SET daily_lodging = EXCLUDED.daily_lodging,
+                                daily_mie = EXCLUDED.daily_mie,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (city, state, rates["lodging"], rates["mie"]))
+                        inserted += 1
+                    except Exception as e:
+                        skipped += 1
+                        print(f"Error inserting {location}: {e}")
+                
+                # Also insert standard CONUS rate
+                cur.execute("""
+                    INSERT INTO gsa_rates (city, state, daily_lodging, daily_mie, fiscal_year)
+                    VALUES ('Standard CONUS', 'US', %s, %s, 2025)
+                    ON CONFLICT (city, state, fiscal_year) DO UPDATE
+                    SET daily_lodging = EXCLUDED.daily_lodging,
+                        daily_mie = EXCLUDED.daily_mie,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (STANDARD_CONUS["lodging"], STANDARD_CONUS["mie"]))
+                
+                conn.commit()
+        
+        return {
+            "message": "GSA rates seeded successfully!",
+            "inserted": inserted,
+            "skipped": skipped,
+            "fiscal_year": 2025
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to seed GSA rates: {str(e)}")
+
+
+@app.post("/api/calculate-pay")
+def calculate_pay_package(request: PayCalculatorRequest):
+    """
+    Calculate complete pay package from bill rate.
+    
+    Uses GSA per diem rates to split compensation into:
+    - Taxable hourly wage
+    - Tax-free housing stipend (travel contracts only)
+    - Tax-free M&IE stipend (travel contracts only)
+    """
+    
+    # Get GSA rates
+    gsa_rates = get_gsa_rates(request.city, request.state)
+    daily_lodging = gsa_rates["lodging"]
+    daily_mie = gsa_rates["mie"]
+    
+    # Calculate weekly/monthly values
+    weeks_per_month = 4.33
+    days_per_week = 5
+    hours_per_month = request.hours_per_week * weeks_per_month
+    
+    # Monthly stipend calculations
+    monthly_lodging_stipend = daily_lodging * 30
+    monthly_mie_stipend = daily_mie * days_per_week * weeks_per_month
+    
+    # Gross calculations
+    gross_monthly_revenue = request.bill_rate * hours_per_month
+    
+    # Your margin
+    gross_margin_amount = gross_monthly_revenue * request.gross_margin_pct
+    after_margin = gross_monthly_revenue - gross_margin_amount
+    
+    # Employer burden
+    burden_amount = after_margin * request.burden_pct
+    total_available_for_pay = after_margin - burden_amount
+    
+    if request.is_travel_contract:
+        # Travel contract: Split into taxable + stipends
+        total_monthly_stipends = monthly_lodging_stipend + monthly_mie_stipend
+        taxable_monthly = total_available_for_pay - total_monthly_stipends
+        
+        # Minimum wage check
+        min_hourly = 15.00
+        min_taxable_monthly = min_hourly * hours_per_month
+        
+        if taxable_monthly < min_taxable_monthly:
+            taxable_monthly = min_taxable_monthly
+            total_monthly_stipends = total_available_for_pay - taxable_monthly
+            stipend_ratio = max(0, total_monthly_stipends / (monthly_lodging_stipend + monthly_mie_stipend))
+            monthly_lodging_stipend = monthly_lodging_stipend * stipend_ratio
+            monthly_mie_stipend = monthly_mie_stipend * stipend_ratio
+        
+        taxable_hourly = taxable_monthly / hours_per_month
+        total_monthly_value = taxable_monthly + monthly_lodging_stipend + monthly_mie_stipend
+        effective_hourly = total_monthly_value / hours_per_month
+        
+        return {
+            "contract_type": "Travel",
+            "location": f"{request.city}, {request.state}",
+            "bill_rate": round(request.bill_rate, 2),
+            "gross_margin_pct": request.gross_margin_pct,
+            "burden_pct": request.burden_pct,
+            "hours_per_week": request.hours_per_week,
+            
+            "gsa_daily_lodging": daily_lodging,
+            "gsa_daily_mie": daily_mie,
+            
+            "taxable_hourly_rate": round(taxable_hourly, 2),
+            "monthly_housing_stipend": round(monthly_lodging_stipend, 2),
+            "monthly_mie_stipend": round(monthly_mie_stipend, 2),
+            "weekly_housing_stipend": round(monthly_lodging_stipend / weeks_per_month, 2),
+            "weekly_mie_stipend": round(monthly_mie_stipend / weeks_per_month, 2),
+            
+            "effective_hourly_rate": round(effective_hourly, 2),
+            "total_weekly_pay": round(total_monthly_value / weeks_per_month, 2),
+            "total_monthly_pay": round(total_monthly_value, 2),
+            
+            "gross_margin_monthly": round(gross_margin_amount, 2),
+            "burden_monthly": round(burden_amount, 2),
+        }
+    
+    else:
+        # Local contract: Fully taxable
+        taxable_hourly = total_available_for_pay / hours_per_month
+        
+        return {
+            "contract_type": "Local",
+            "location": f"{request.city}, {request.state}",
+            "bill_rate": round(request.bill_rate, 2),
+            "gross_margin_pct": request.gross_margin_pct,
+            "burden_pct": request.burden_pct,
+            "hours_per_week": request.hours_per_week,
+            
+            "gsa_daily_lodging": daily_lodging,
+            "gsa_daily_mie": daily_mie,
+            
+            "taxable_hourly_rate": round(taxable_hourly, 2),
+            "monthly_housing_stipend": 0,
+            "monthly_mie_stipend": 0,
+            "weekly_housing_stipend": 0,
+            "weekly_mie_stipend": 0,
+            
+            "effective_hourly_rate": round(taxable_hourly, 2),
+            "total_weekly_pay": round(taxable_hourly * request.hours_per_week, 2),
+            "total_monthly_pay": round(total_available_for_pay, 2),
+            
+            "gross_margin_monthly": round(gross_margin_amount, 2),
+            "burden_monthly": round(burden_amount, 2),
+        }
+
+
+# ============================================================================
 # RUN SERVER
 # ============================================================================
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)
+
