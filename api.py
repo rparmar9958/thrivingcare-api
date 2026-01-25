@@ -14,7 +14,7 @@ Endpoints:
 - GET /api/gsa-rates - Get GSA per diem rates for a location
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
@@ -73,6 +73,29 @@ class CandidateResponse(BaseModel):
     id: int
     message: str
     status: str
+
+
+class AdminJobCreate(BaseModel):
+    """Model for creating jobs via admin panel"""
+    title: str
+    discipline: str
+    facility: str
+    setting: Optional[str] = None
+    city: str
+    state: str
+    duration_weeks: int = 13
+    hours_per_week: int = 40
+    shift: Optional[str] = "Days"
+    start_date: Optional[str] = None
+    bill_rate: float
+    margin_percent: float = 20
+    description: str
+    requirements: Optional[List[str]] = []
+    benefits: Optional[List[str]] = []
+
+
+# Admin password - CHANGE THIS IN PRODUCTION!
+ADMIN_PASSWORD = "thrivingcare2024"
 
 
 # ============================================================================
@@ -143,6 +166,20 @@ def run_migrations():
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS start_date DATE",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS setting VARCHAR(100)",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS source VARCHAR(100) DEFAULT 'Manual Entry'",
+        
+        # NEW: Admin job creation columns
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS facility VARCHAR(255)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS location VARCHAR(255)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duration_weeks INTEGER DEFAULT 13",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS hours_per_week INTEGER DEFAULT 40",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS shift VARCHAR(50)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS bill_rate DECIMAL(10,2)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS margin_percent DECIMAL(5,2) DEFAULT 20",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS hourly_rate DECIMAL(10,2)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS weekly_gross DECIMAL(10,2)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contract_total DECIMAL(10,2)",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS benefits TEXT[]",
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS enriched BOOLEAN DEFAULT FALSE",
         
         # CANDIDATES TABLE UPDATES
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS discipline VARCHAR(100)",
@@ -464,6 +501,96 @@ def get_jobs(
                 }
     except Exception as e:
         print(f"Error fetching jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# ADMIN JOB CREATION ENDPOINT
+# ============================================================================
+
+@app.post("/api/admin/jobs")
+async def create_job_admin(
+    job: AdminJobCreate,
+    x_admin_password: str = Header(None)
+):
+    """
+    Create a new job listing with auto-calculated pay package.
+    Requires admin password in X-Admin-Password header.
+    
+    Used by: admin.html
+    """
+    
+    # Verify admin password
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        # Calculate pay package
+        candidate_hourly = job.bill_rate * (1 - job.margin_percent / 100)
+        weekly_gross = candidate_hourly * job.hours_per_week
+        contract_total = weekly_gross * job.duration_weeks
+        
+        # Format location
+        location = f"{job.city}, {job.state}"
+        
+        # Insert into database
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = """
+                    INSERT INTO jobs (
+                        title, discipline, facility, setting, city, state, location,
+                        duration_weeks, hours_per_week, shift, start_date,
+                        bill_rate, margin_percent, hourly_rate, weekly_gross, contract_total,
+                        description, requirements, benefits, active, enriched, source, created_at
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, TRUE, TRUE, 'admin', NOW()
+                    ) RETURNING id, title, city, state, weekly_gross, created_at
+                """
+                
+                cur.execute(query, (
+                    job.title,
+                    job.discipline,
+                    job.facility,
+                    job.setting,
+                    job.city,
+                    job.state,
+                    location,
+                    job.duration_weeks,
+                    job.hours_per_week,
+                    job.shift,
+                    job.start_date if job.start_date else None,
+                    job.bill_rate,
+                    job.margin_percent,
+                    round(candidate_hourly, 2),
+                    round(weekly_gross, 2),
+                    round(contract_total, 2),
+                    job.description,
+                    job.requirements,
+                    job.benefits
+                ))
+                
+                new_job = cur.fetchone()
+                conn.commit()
+        
+        print(f"✓ New job created via admin: {job.title} in {location}")
+        
+        return {
+            "success": True,
+            "message": "Job created successfully",
+            "job": {
+                "id": new_job['id'],
+                "title": new_job['title'],
+                "location": f"{new_job['city']}, {new_job['state']}",
+                "weekly_gross": float(new_job['weekly_gross']),
+                "created_at": new_job['created_at'].isoformat() if new_job['created_at'] else None
+            }
+        }
+        
+    except Exception as e:
+        print(f"Error creating job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
