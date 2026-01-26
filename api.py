@@ -571,7 +571,7 @@ def run_migrations():
         successful = len([r for r in results if r["success"]])
         failed = len([r for r in results if not r["success"]])
         
-        return {
+               return {
             "message": "Migrations complete!",
             "total": len(migrations),
             "successful": successful,
@@ -581,7 +581,9 @@ def run_migrations():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Migration failed: {str(e)}")
-        @app.get("/api/jobs/count")
+
+
+@app.get("/api/jobs/count")
 def get_jobs_count():
     """Get total number of active jobs"""
     try:
