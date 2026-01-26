@@ -1688,3 +1688,37 @@ def calculate_pay_package(request: PayCalculatorRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000)
+    # ============================================================================
+# ADMIN: CANDIDATES MANAGEMENT
+# ============================================================================
+
+@app.get("/api/admin/candidates")
+async def get_candidates(
+    discipline: Optional[str] = None,
+    x_admin_password: str = Header(None)
+):
+    """Get all candidates with optional filtering"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = "SELECT * FROM candidates WHERE active = TRUE"
+                params = []
+                
+                if discipline:
+                    query += " AND (license_type ILIKE %s OR discipline ILIKE %s)"
+                    params.extend([f"%{discipline}%", f"%{discipline}%"])
+                
+                query += " ORDER BY created_at DESC"
+                
+                cur.execute(query, params)
+                candidates = cur.fetchall()
+                
+                return {"candidates": candidates}
+    except Exception as e:
+        print(f"Error fetching candidates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
