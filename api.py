@@ -92,7 +92,7 @@ class AdminJobCreate(BaseModel):
     description: str
     requirements: Optional[List[str]] = []
     benefits: Optional[List[str]] = []
-    class JobStatusUpdate(BaseModel):
+class JobStatusUpdate(BaseModel):
     active: bool
 
 
