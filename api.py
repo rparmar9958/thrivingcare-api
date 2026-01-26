@@ -92,6 +92,8 @@ class AdminJobCreate(BaseModel):
     description: str
     requirements: Optional[List[str]] = []
     benefits: Optional[List[str]] = []
+    class JobStatusUpdate(BaseModel):
+    active: bool
 
 
 # Admin password - CHANGE THIS IN PRODUCTION!
@@ -1772,5 +1774,53 @@ async def get_analytics(x_admin_password: str = Header(None)):
                 }
     except Exception as e:
         print(f"Error fetching analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+        # ============================================================================
+# ADMIN: JOB MANAGEMENT (Edit/Delete)
+# ============================================================================
+
+@app.put("/api/admin/jobs/{job_id}/status")
+async def update_job_status(
+    job_id: int,
+    status: JobStatusUpdate,
+    x_admin_password: str = Header(None)
+):
+    """Update job active status"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE jobs SET active = %s, updated_at = NOW() WHERE id = %s",
+                    (status.active, job_id)
+                )
+                conn.commit()
+                return {"success": True, "message": f"Job {'activated' if status.active else 'deactivated'}"}
+    except Exception as e:
+        print(f"Error updating job status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/admin/jobs/{job_id}")
+async def delete_job(
+    job_id: int,
+    x_admin_password: str = Header(None)
+):
+    """Delete a job"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM jobs WHERE id = %s", (job_id,))
+                conn.commit()
+                return {"success": True, "message": "Job deleted"}
+    except Exception as e:
+        print(f"Error deleting job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
