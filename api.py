@@ -1721,4 +1721,56 @@ async def get_candidates(
     except Exception as e:
         print(f"Error fetching candidates: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+        # ============================================================================
+# ADMIN: ANALYTICS
+# ============================================================================
+
+@app.get("/api/admin/analytics")
+async def get_analytics(x_admin_password: str = Header(None)):
+    """Get dashboard analytics"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT COUNT(*) as count FROM jobs WHERE active = TRUE")
+                total_jobs = cur.fetchone()['count']
+                
+                cur.execute("SELECT COUNT(*) as count FROM candidates WHERE active = TRUE")
+                total_candidates = cur.fetchone()['count']
+                
+                cur.execute("""
+                    SELECT COUNT(*) as count FROM candidates 
+                    WHERE active = TRUE AND created_at >= NOW() - INTERVAL '7 days'
+                """)
+                new_this_week = cur.fetchone()['count']
+                
+                cur.execute("""
+                    SELECT COUNT(*) as count FROM candidates 
+                    WHERE active = TRUE AND resume_url IS NOT NULL
+                """)
+                with_resume = cur.fetchone()['count']
+                
+                cur.execute("""
+                    SELECT COALESCE(license_type, discipline, 'Other') as discipline, COUNT(*) as count 
+                    FROM candidates 
+                    WHERE active = TRUE
+                    GROUP BY COALESCE(license_type, discipline, 'Other')
+                    ORDER BY count DESC
+                """)
+                discipline_rows = cur.fetchall()
+                by_discipline = {row['discipline']: row['count'] for row in discipline_rows}
+                
+                return {
+                    "total_jobs": total_jobs,
+                    "total_candidates": total_candidates,
+                    "new_this_week": new_this_week,
+                    "with_resume": with_resume,
+                    "by_discipline": by_discipline
+                }
+    except Exception as e:
+        print(f"Error fetching analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
