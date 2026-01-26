@@ -14,9 +14,8 @@ Endpoints:
 - GET /api/gsa-rates - Get GSA per diem rates for a location
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Header, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
 from decimal import Decimal
@@ -95,24 +94,6 @@ class AdminJobCreate(BaseModel):
     benefits: Optional[List[str]] = []
 
 
-class JobStatusUpdate(BaseModel):
-    active: bool
-
-
-class PipelineCreate(BaseModel):
-    candidate_id: int
-    job_id: Optional[int] = None
-    stage: str = "new"
-
-
-class PipelineStageUpdate(BaseModel):
-    stage: str
-
-
-class PipelineNoteCreate(BaseModel):
-    note: str
-
-
 # Admin password - CHANGE THIS IN PRODUCTION!
 ADMIN_PASSWORD = "thrivingcare2024"
 
@@ -128,6 +109,7 @@ def get_db_connection():
 
 def parse_address(address: str) -> dict:
     """Parse full address into components"""
+    # Simple parser - improve as needed
     parts = [p.strip() for p in address.split(',')]
     
     city = parts[-2] if len(parts) >= 2 else ''
@@ -148,238 +130,6 @@ def parse_address(address: str) -> dict:
 
 
 # ============================================================================
-# AUTO-MATCHING SYSTEM
-# ============================================================================
-
-def auto_match_candidate_to_jobs(candidate_id: int, phone: str, first_name: str, discipline: str):
-    """When a new candidate signs up, find matching jobs and notify them"""
-    
-    if not twilio_client or not phone:
-        return
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT id, title, city, state, weekly_gross, facility
-                    FROM jobs 
-                    WHERE active = TRUE 
-                    AND enriched = TRUE
-                    AND discipline ILIKE %s
-                    ORDER BY weekly_gross DESC
-                    LIMIT 3
-                """, (f"%{discipline}%",))
-                
-                jobs = cur.fetchall()
-                
-                if not jobs:
-                    cur.execute("""
-                        SELECT id, title, city, state, weekly_gross, facility
-                        FROM jobs 
-                        WHERE active = TRUE AND enriched = TRUE
-                        ORDER BY created_at DESC
-                        LIMIT 3
-                    """)
-                    jobs = cur.fetchall()
-                
-                if jobs:
-                    job_list = "\n".join([
-                        f"• {j['title']} in {j['city']}, {j['state']} - ${int(j['weekly_gross'] or 0):,}/wk"
-                        for j in jobs
-                    ])
-                    
-                    match_message = f"""🎯 {first_name}, we found jobs for you!
-
-{job_list}
-
-View all & apply: https://thrivingcarestaffing.com/jobs
-
-Reply INTERESTED to any job title for more details!"""
-                    
-                    twilio_client.messages.create(
-                        body=match_message,
-                        from_=TWILIO_PHONE,
-                        to=phone
-                    )
-                    
-                    cur.execute("""
-                        INSERT INTO activity_log (type, description, candidate_id, created_at)
-                        VALUES ('job_match_sent', %s, %s, NOW())
-                    """, (f"Sent {len(jobs)} job matches via SMS", candidate_id))
-                    conn.commit()
-                    
-                    print(f"  Sent {len(jobs)} job matches to candidate {candidate_id}")
-                    
-    except Exception as e:
-        print(f"Error in auto_match_candidate_to_jobs: {e}")
-
-
-def auto_match_job_to_candidates(job_id: int, title: str, discipline: str, city: str, state: str, weekly_gross: float) -> int:
-    """When a new job is posted, find matching candidates and notify them"""
-    
-    if not twilio_client:
-        return 0
-    
-    notified = 0
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT id, first_name, phone, license_type, home_state
-                    FROM candidates 
-                    WHERE active = TRUE 
-                    AND phone IS NOT NULL
-                    AND (
-                        license_type ILIKE %s 
-                        OR discipline ILIKE %s
-                        OR home_state = %s
-                    )
-                    ORDER BY created_at DESC
-                    LIMIT 20
-                """, (f"%{discipline}%", f"%{discipline}%", state))
-                
-                candidates = cur.fetchall()
-                
-                for candidate in candidates:
-                    try:
-                        cur.execute("""
-                            SELECT id FROM job_notifications 
-                            WHERE candidate_id = %s AND job_id = %s
-                        """, (candidate['id'], job_id))
-                        
-                        if cur.fetchone():
-                            continue
-                        
-                        message = f"""🚨 New {discipline} opportunity!
-
-{title}
-📍 {city}, {state}
-💰 ${int(weekly_gross):,}/week
-
-Interested? Reply YES or view: https://thrivingcarestaffing.com/jobs
-
-- ThrivingCare Team"""
-                        
-                        twilio_client.messages.create(
-                            body=message,
-                            from_=TWILIO_PHONE,
-                            to=candidate['phone']
-                        )
-                        
-                        cur.execute("""
-                            INSERT INTO job_notifications (candidate_id, job_id, sent_at)
-                            VALUES (%s, %s, NOW())
-                        """, (candidate['id'], job_id))
-                        
-                        notified += 1
-                        
-                    except Exception as e:
-                        print(f"Failed to notify candidate {candidate['id']}: {e}")
-                
-                if notified > 0:
-                    cur.execute("""
-                        INSERT INTO activity_log (type, description, job_id, created_at)
-                        VALUES ('job_notifications_sent', %s, %s, NOW())
-                    """, (f"Notified {notified} candidates about new job", job_id))
-                
-                conn.commit()
-                
-    except Exception as e:
-        print(f"Error in auto_match_job_to_candidates: {e}")
-    
-    return notified
-    # ============================================================================
-# AUTOMATED VETTING SYSTEM
-# ============================================================================
-
-VETTING_QUESTIONS = [
-    {
-        "id": 1,
-        "question": "What state(s) are you licensed in? Please list all (e.g., TX, CA, NY)",
-        "field": "license_states",
-        "type": "text"
-    },
-    {
-        "id": 2,
-        "question": "What is your license number for your primary state?",
-        "field": "license_number",
-        "type": "text"
-    },
-    {
-        "id": 3,
-        "question": "When are you available to start a new contract? (e.g., ASAP, Jan 15, 2 weeks)",
-        "field": "available_date",
-        "type": "text"
-    },
-    {
-        "id": 4,
-        "question": "What is your minimum weekly pay requirement? (just the number, e.g., 1500)",
-        "field": "min_weekly_pay",
-        "type": "number"
-    },
-    {
-        "id": 5,
-        "question": "Are you open to travel/relocation for the right opportunity? (YES/NO)",
-        "field": "open_to_travel",
-        "type": "boolean"
-    }
-]
-
-
-def start_vetting_flow(candidate_id: int, phone: str, first_name: str):
-    """Start the automated vetting flow for a new candidate"""
-    
-    if not twilio_client or not phone:
-        return
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO candidate_vetting (candidate_id, current_question, status, started_at)
-                    VALUES (%s, 1, 'in_progress', NOW())
-                    ON CONFLICT (candidate_id) DO UPDATE SET current_question = 1, status = 'in_progress'
-                """, (candidate_id,))
-                conn.commit()
-        
-        import time
-        time.sleep(2)
-        
-        send_vetting_question(candidate_id, phone, first_name, 1)
-        
-    except Exception as e:
-        print(f"Error starting vetting flow: {e}")
-
-
-def send_vetting_question(candidate_id: int, phone: str, first_name: str, question_num: int):
-    """Send a vetting question to the candidate"""
-    
-    if not twilio_client or question_num > len(VETTING_QUESTIONS):
-        return
-    
-    question = VETTING_QUESTIONS[question_num - 1]
-    
-    try:
-        message = f"""📋 Quick question {question_num}/5, {first_name}:
-
-{question['question']}
-
-(Reply with your answer)"""
-        
-        twilio_client.messages.create(
-            body=message,
-            from_=TWILIO_PHONE,
-            to=phone
-        )
-        
-        print(f"  Sent vetting Q{question_num} to candidate {candidate_id}")
-        
-    except Exception as e:
-        print(f"Error sending vetting question: {e}")
-
-
-# ============================================================================
 # ENDPOINTS
 # ============================================================================
 
@@ -389,8 +139,7 @@ def read_root():
     return {
         "status": "healthy",
         "service": "ThrivingCare API",
-        "version": "2.0",
-        "timestamp": datetime.now().isoformat()
+        "version": "1.1"
     }
 
 
@@ -418,7 +167,7 @@ def run_migrations():
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS setting VARCHAR(100)",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS source VARCHAR(100) DEFAULT 'Manual Entry'",
         
-        # Admin job creation columns
+        # NEW: Admin job creation columns
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS facility VARCHAR(255)",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS location VARCHAR(255)",
         "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duration_weeks INTEGER DEFAULT 13",
@@ -443,14 +192,8 @@ def run_migrations():
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS availability_date DATE",
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_status VARCHAR(50) DEFAULT 'pending'",
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_score INTEGER",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS license_states_verified TEXT",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS license_number VARCHAR(100)",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS available_start_date VARCHAR(100)",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS min_weekly_pay DECIMAL(10,2)",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS open_to_travel BOOLEAN",
-        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS vetting_complete BOOLEAN DEFAULT FALSE",
         
-        # ADMINS TABLE
+        # ADMINS TABLE (NEW)
         """CREATE TABLE IF NOT EXISTS admins (
             id SERIAL PRIMARY KEY,
             email VARCHAR(255) UNIQUE NOT NULL,
@@ -462,7 +205,7 @@ def run_migrations():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
         
-        # PIPELINE STAGES TABLE
+        # PIPELINE STAGES TABLE (NEW)
         """CREATE TABLE IF NOT EXISTS pipeline_stages (
             id SERIAL PRIMARY KEY,
             candidate_id INTEGER REFERENCES candidates(id) ON DELETE CASCADE,
@@ -472,17 +215,7 @@ def run_migrations():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
         
-        # ACTIVITY LOG TABLE
-        """CREATE TABLE IF NOT EXISTS activity_log (
-            id SERIAL PRIMARY KEY,
-            type VARCHAR(50) NOT NULL,
-            description TEXT,
-            candidate_id INTEGER REFERENCES candidates(id) ON DELETE SET NULL,
-            job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""",
-        
-        # AI VETTING LOGS TABLE
+        # AI VETTING LOGS TABLE (NEW)
         """CREATE TABLE IF NOT EXISTS ai_vetting_logs (
             id SERIAL PRIMARY KEY,
             candidate_id INTEGER REFERENCES candidates(id) ON DELETE CASCADE,
@@ -494,7 +227,7 @@ def run_migrations():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
         
-        # GSA PER DIEM RATES TABLE
+        # GSA PER DIEM RATES TABLE (NEW)
         """CREATE TABLE IF NOT EXISTS gsa_rates (
             id SERIAL PRIMARY KEY,
             city VARCHAR(100) NOT NULL,
@@ -506,44 +239,6 @@ def run_migrations():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(city, state, fiscal_year)
-        )""",
-        
-        # CANDIDATE VETTING TABLE
-        """CREATE TABLE IF NOT EXISTS candidate_vetting (
-            id SERIAL PRIMARY KEY,
-            candidate_id INTEGER UNIQUE REFERENCES candidates(id) ON DELETE CASCADE,
-            current_question INTEGER DEFAULT 1,
-            status VARCHAR(50) DEFAULT 'pending',
-            license_states TEXT,
-            license_number VARCHAR(100),
-            available_date VARCHAR(100),
-            min_weekly_pay DECIMAL(10,2),
-            open_to_travel BOOLEAN,
-            started_at TIMESTAMP,
-            completed_at TIMESTAMP,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )""",
-        
-        # JOB NOTIFICATIONS TABLE
-        """CREATE TABLE IF NOT EXISTS job_notifications (
-            id SERIAL PRIMARY KEY,
-            candidate_id INTEGER REFERENCES candidates(id) ON DELETE CASCADE,
-            job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,
-            sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            response VARCHAR(50),
-            responded_at TIMESTAMP,
-            UNIQUE(candidate_id, job_id)
-        )""",
-        
-        # SMS MESSAGES LOG TABLE
-        """CREATE TABLE IF NOT EXISTS sms_messages (
-            id SERIAL PRIMARY KEY,
-            candidate_id INTEGER REFERENCES candidates(id) ON DELETE SET NULL,
-            phone VARCHAR(20),
-            direction VARCHAR(10),
-            message TEXT,
-            message_type VARCHAR(50),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
     ]
     
@@ -571,7 +266,7 @@ def run_migrations():
         successful = len([r for r in results if r["success"]])
         failed = len([r for r in results if not r["success"]])
         
-               return {
+        return {
             "message": "Migrations complete!",
             "total": len(migrations),
             "successful": successful,
@@ -591,21 +286,30 @@ def get_jobs_count():
             with conn.cursor() as cur:
                 cur.execute("SELECT COUNT(*) FROM jobs WHERE active = TRUE")
                 count = cur.fetchone()[0]
-        return {"count": count}
+                return {"count": count, "updated_at": datetime.now().isoformat()}
     except Exception as e:
-        print(f"Error getting jobs count: {e}")
-        return {"count": 0}
+        print(f"Error fetching job count: {e}")
+        # Return fallback count
+        return {"count": 250, "updated_at": datetime.now().isoformat()}
 
 
 @app.post("/api/candidates", response_model=CandidateResponse)
 async def create_candidate(candidate: CandidateIntake):
     """
     Create new candidate from website signup
+    
+    This endpoint:
+    1. Saves candidate to database
+    2. Sends welcome SMS
+    3. Triggers matching engine
+    4. Returns candidate ID for resume upload
     """
     
     try:
+        # Parse address components
         address_parts = parse_address(candidate.homeAddress)
         
+        # Insert into database
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 query = """
@@ -658,18 +362,7 @@ Questions? Reply to this message!"""
             except Exception as e:
                 print(f"Failed to send welcome SMS: {e}")
         
-        # AUTO-MATCHING: Find and notify about matching jobs
-        try:
-            auto_match_candidate_to_jobs(candidate_id, candidate.phone, candidate.firstName, candidate.discipline)
-        except Exception as e:
-            print(f"Auto-match error: {e}")
-        
-        # START VETTING: Send first vetting question after a delay
-        try:
-            start_vetting_flow(candidate_id, candidate.phone, candidate.firstName)
-        except Exception as e:
-            print(f"Vetting start error: {e}")
-        
+        # Log event
         print(f"✓ New candidate: {candidate.firstName} {candidate.lastName} ({candidate.email})")
         print(f"  Discipline: {candidate.discipline}")
         print(f"  Location: {address_parts['city']}, {address_parts['state']}")
@@ -687,23 +380,31 @@ Questions? Reply to this message!"""
 
 @app.post("/api/candidates/{candidate_id}/resume")
 async def upload_resume(candidate_id: int, resume: UploadFile = File(...)):
-    """Upload resume for candidate"""
+    """
+    Upload resume for candidate
+    
+    Saves to S3 and updates database with file URL
+    """
     
     try:
+        # Validate file type
         allowed_types = ['application/pdf', 'application/msword', 
                         'application/vnd.openxmlformats-officedocument.wordprocessingml.document']
         
         if resume.content_type not in allowed_types:
             raise HTTPException(status_code=400, detail="Invalid file type. Please upload PDF or Word document.")
         
+        # Validate file size (5MB max)
         resume_content = await resume.read()
         if len(resume_content) > 5 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="File too large. Maximum size is 5MB.")
         
+        # Generate unique filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_extension = resume.filename.split('.')[-1]
         s3_key = f"resumes/candidate_{candidate_id}_{timestamp}.{file_extension}"
         
+        # Upload to S3
         if s3_client:
             s3_client.put_object(
                 Bucket=AWS_BUCKET,
@@ -711,14 +412,17 @@ async def upload_resume(candidate_id: int, resume: UploadFile = File(...)):
                 Body=resume_content,
                 ContentType=resume.content_type
             )
+            
             resume_url = f"https://{AWS_BUCKET}.s3.amazonaws.com/{s3_key}"
         else:
+            # Fallback: save locally (for development)
             os.makedirs('uploads/resumes', exist_ok=True)
             filepath = f"uploads/resumes/{s3_key}"
             with open(filepath, 'wb') as f:
                 f.write(resume_content)
             resume_url = f"/uploads/resumes/{s3_key}"
         
+        # Update database
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -741,262 +445,6 @@ async def upload_resume(candidate_id: int, resume: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============================================================================
-# TWILIO WEBHOOK - INCOMING SMS
-# ============================================================================
-
-@app.post("/api/sms/webhook")
-async def handle_incoming_sms(request: Request):
-    """Twilio webhook for incoming SMS messages."""
-    
-    try:
-        form_data = await request.form()
-        from_number = form_data.get('From', '')
-        message_body = form_data.get('Body', '').strip()
-        
-        print(f"📱 Incoming SMS from {from_number}: {message_body}")
-        
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT c.*, cv.current_question, cv.status as vetting_status
-                    FROM candidates c
-                    LEFT JOIN candidate_vetting cv ON c.id = cv.candidate_id
-                    WHERE c.phone = %s
-                """, (from_number,))
-                
-                candidate = cur.fetchone()
-                
-                if not candidate:
-                    print(f"  Unknown sender: {from_number}")
-                    return Response(content="", media_type="text/xml")
-                
-                candidate_id = candidate['id']
-                first_name = candidate['first_name']
-                
-                cur.execute("""
-                    INSERT INTO sms_messages (candidate_id, phone, direction, message, message_type, created_at)
-                    VALUES (%s, %s, 'inbound', %s, 'response', NOW())
-                """, (candidate_id, from_number, message_body))
-                conn.commit()
-                
-                if candidate['vetting_status'] == 'in_progress':
-                    response_msg = process_vetting_response(
-                        candidate_id, 
-                        from_number, 
-                        first_name,
-                        candidate['current_question'],
-                        message_body
-                    )
-                    
-                    if response_msg and twilio_client:
-                        twilio_client.messages.create(
-                            body=response_msg,
-                            from_=TWILIO_PHONE,
-                            to=from_number
-                        )
-                
-                elif message_body.upper() in ['YES', 'INTERESTED', 'Y']:
-                    handle_job_interest(candidate_id, from_number, first_name)
-                
-                elif message_body.upper() in ['STOP', 'UNSUBSCRIBE', 'QUIT']:
-                    cur.execute("""
-                        UPDATE candidates SET active = FALSE WHERE id = %s
-                    """, (candidate_id,))
-                    conn.commit()
-                    
-                    if twilio_client:
-                        twilio_client.messages.create(
-                            body="You've been unsubscribed from ThrivingCare. Reply START to re-subscribe.",
-                            from_=TWILIO_PHONE,
-                            to=from_number
-                        )
-                
-                cur.execute("""
-                    INSERT INTO activity_log (type, description, candidate_id, created_at)
-                    VALUES ('sms_received', %s, %s, NOW())
-                """, (f"Received: {message_body[:50]}...", candidate_id))
-                conn.commit()
-        
-        return Response(content="<?xml version='1.0' encoding='UTF-8'?><Response></Response>", media_type="text/xml")
-        
-    except Exception as e:
-        print(f"Error handling SMS webhook: {e}")
-        return Response(content="", media_type="text/xml")
-        def process_vetting_response(candidate_id: int, phone: str, first_name: str, question_num: int, response: str) -> str:
-    """Process a vetting question response and send next question"""
-    
-    if question_num > len(VETTING_QUESTIONS):
-        return None
-    
-    question = VETTING_QUESTIONS[question_num - 1]
-    field = question['field']
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                if field == 'license_states':
-                    states = ','.join([s.strip().upper() for s in response.replace(' ', ',').split(',')])
-                    cur.execute("""
-                        UPDATE candidate_vetting SET license_states = %s WHERE candidate_id = %s
-                    """, (states, candidate_id))
-                    cur.execute("""
-                        UPDATE candidates SET license_states_verified = %s WHERE id = %s
-                    """, (states, candidate_id))
-                    
-                elif field == 'license_number':
-                    cur.execute("""
-                        UPDATE candidate_vetting SET license_number = %s WHERE candidate_id = %s
-                    """, (response, candidate_id))
-                    cur.execute("""
-                        UPDATE candidates SET license_number = %s WHERE id = %s
-                    """, (response, candidate_id))
-                    
-                elif field == 'available_date':
-                    cur.execute("""
-                        UPDATE candidate_vetting SET available_date = %s WHERE candidate_id = %s
-                    """, (response, candidate_id))
-                    cur.execute("""
-                        UPDATE candidates SET available_start_date = %s WHERE id = %s
-                    """, (response, candidate_id))
-                    
-                elif field == 'min_weekly_pay':
-                    try:
-                        pay = float(''.join(c for c in response if c.isdigit() or c == '.'))
-                    except:
-                        pay = 0
-                    cur.execute("""
-                        UPDATE candidate_vetting SET min_weekly_pay = %s WHERE candidate_id = %s
-                    """, (pay, candidate_id))
-                    cur.execute("""
-                        UPDATE candidates SET min_weekly_pay = %s WHERE id = %s
-                    """, (pay, candidate_id))
-                    
-                elif field == 'open_to_travel':
-                    is_open = response.upper() in ['YES', 'Y', 'YEP', 'YEAH', 'SURE', 'OK']
-                    cur.execute("""
-                        UPDATE candidate_vetting SET open_to_travel = %s WHERE candidate_id = %s
-                    """, (is_open, candidate_id))
-                    cur.execute("""
-                        UPDATE candidates SET open_to_travel = %s WHERE id = %s
-                    """, (is_open, candidate_id))
-                
-                cur.execute("""
-                    INSERT INTO ai_vetting_logs (candidate_id, question, response, question_type, created_at)
-                    VALUES (%s, %s, %s, 'automated', NOW())
-                """, (candidate_id, question['question'], response))
-                
-                next_question = question_num + 1
-                
-                if next_question > len(VETTING_QUESTIONS):
-                    cur.execute("""
-                        UPDATE candidate_vetting SET status = 'complete', completed_at = NOW(), current_question = %s
-                        WHERE candidate_id = %s
-                    """, (next_question, candidate_id))
-                    cur.execute("""
-                        UPDATE candidates SET vetting_complete = TRUE, ai_vetting_status = 'complete' WHERE id = %s
-                    """, (candidate_id,))
-                    
-                    cur.execute("""
-                        INSERT INTO pipeline_stages (candidate_id, stage, notes, created_at)
-                        VALUES (%s, 'contacted', 'Auto-added after vetting completion', NOW())
-                        ON CONFLICT DO NOTHING
-                    """, (candidate_id,))
-                    
-                    cur.execute("""
-                        INSERT INTO activity_log (type, description, candidate_id, created_at)
-                        VALUES ('vetting_complete', 'Candidate completed automated vetting', %s, NOW())
-                    """, (candidate_id,))
-                    
-                    conn.commit()
-                    
-                    return f"""✅ Thanks {first_name}! You're all set.
-
-We have your info and will reach out with matching opportunities soon!
-
-Questions? Just reply to this message.
-
-- ThrivingCare Team 💚"""
-                
-                else:
-                    cur.execute("""
-                        UPDATE candidate_vetting SET current_question = %s WHERE candidate_id = %s
-                    """, (next_question, candidate_id))
-                    conn.commit()
-                    
-                    next_q = VETTING_QUESTIONS[next_question - 1]
-                    return f"""👍 Got it!
-
-📋 Question {next_question}/5:
-{next_q['question']}"""
-                    
-    except Exception as e:
-        print(f"Error processing vetting response: {e}")
-        return None
-
-
-def handle_job_interest(candidate_id: int, phone: str, first_name: str):
-    """Handle when candidate replies YES/INTERESTED to a job"""
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT jn.*, j.title, j.city, j.state, j.weekly_gross, j.facility, j.description
-                    FROM job_notifications jn
-                    JOIN jobs j ON jn.job_id = j.id
-                    WHERE jn.candidate_id = %s
-                    ORDER BY jn.sent_at DESC
-                    LIMIT 1
-                """, (candidate_id,))
-                
-                notification = cur.fetchone()
-                
-                if notification and twilio_client:
-                    cur.execute("""
-                        UPDATE job_notifications SET response = 'interested', responded_at = NOW()
-                        WHERE id = %s
-                    """, (notification['id'],))
-                    
-                    cur.execute("""
-                        INSERT INTO pipeline_stages (candidate_id, job_id, stage, notes, created_at)
-                        VALUES (%s, %s, 'contacted', 'Expressed interest via SMS', NOW())
-                        ON CONFLICT DO NOTHING
-                    """, (candidate_id, notification['job_id']))
-                    
-                    cur.execute("""
-                        INSERT INTO activity_log (type, description, candidate_id, job_id, created_at)
-                        VALUES ('job_interest', 'Candidate expressed interest via SMS', %s, %s, NOW())
-                    """, (candidate_id, notification['job_id']))
-                    
-                    conn.commit()
-                    
-                    job = notification
-                    message = f"""Great choice, {first_name}! 🎉
-
-Here's more about the position:
-
-📋 {job['title']}
-🏥 {job['facility'] or 'Healthcare Facility'}
-📍 {job['city']}, {job['state']}
-💰 ${int(job['weekly_gross']):,}/week
-
-{(job['description'] or '')[:200]}...
-
-A recruiter will reach out within 24 hours to discuss next steps!
-
-View all jobs: https://thrivingcarestaffing.com/jobs"""
-                    
-                    twilio_client.messages.create(
-                        body=message,
-                        from_=TWILIO_PHONE,
-                        to=phone
-                    )
-                    
-    except Exception as e:
-        print(f"Error handling job interest: {e}")
-
-
 @app.get("/api/jobs")
 def get_jobs(
     specialty: Optional[str] = None,
@@ -1004,18 +452,27 @@ def get_jobs(
     page: int = 1,
     per_page: int = 20
 ):
-    """Get job listings (paginated)"""
+    """
+    Get job listings (paginated)
+    
+    Query params:
+    - specialty: Filter by specialty
+    - location: Filter by city or state
+    - page: Page number (default 1)
+    - per_page: Results per page (default 20)
+    """
     
     try:
         offset = (page - 1) * per_page
         
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                query = "SELECT * FROM jobs WHERE active = TRUE"
+                # Build query
+                query = "SELECT * FROM jobs WHERE active = TRUE AND enriched = TRUE"
                 params = []
                 
                 if specialty:
-                    query += " AND (title ILIKE %s OR discipline ILIKE %s)"
+                    query += " AND (specialty ILIKE %s OR title ILIKE %s)"
                     params.extend([f"%{specialty}%", f"%{specialty}%"])
                 
                 if location:
@@ -1028,54 +485,68 @@ def get_jobs(
                 cur.execute(query, params)
                 jobs = cur.fetchall()
                 
-                cur.execute("SELECT COUNT(*) FROM jobs WHERE active = TRUE")
+                # Get total count
+                count_query = "SELECT COUNT(*) FROM jobs WHERE active = TRUE AND enriched = TRUE"
+                if specialty or location:
+                    count_query = query.split('ORDER BY')[0]
+                cur.execute(count_query, params[:-2] if params else [])
                 total = cur.fetchone()['count']
-        
-        return {
-            "jobs": jobs,
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "pages": (total + per_page - 1) // per_page
-        }
-        
+                
+                return {
+                    "jobs": jobs,
+                    "page": page,
+                    "per_page": per_page,
+                    "total": total,
+                    "pages": (total + per_page - 1) // per_page
+                }
     except Exception as e:
-        print(f"Error getting jobs: {e}")
+        print(f"Error fetching jobs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-        # ============================================================================
-# ADMIN: JOB CREATION
+
+
+# ============================================================================
+# ADMIN JOB CREATION ENDPOINT
 # ============================================================================
 
 @app.post("/api/admin/jobs")
-async def create_job(job: AdminJobCreate, x_admin_password: str = Header(None)):
-    """Create a new job listing via admin panel"""
+async def create_job_admin(
+    job: AdminJobCreate,
+    x_admin_password: str = Header(None)
+):
+    """
+    Create a new job listing with auto-calculated pay package.
+    Requires admin password in X-Admin-Password header.
     
+    Used by: admin.html
+    """
+    
+    # Verify admin password
     if x_admin_password != ADMIN_PASSWORD:
         raise HTTPException(status_code=401, detail="Invalid admin password")
     
     try:
+        # Calculate pay package
         candidate_hourly = job.bill_rate * (1 - job.margin_percent / 100)
         weekly_gross = candidate_hourly * job.hours_per_week
         contract_total = weekly_gross * job.duration_weeks
+        
+        # Format location
         location = f"{job.city}, {job.state}"
         
+        # Insert into database
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 query = """
                     INSERT INTO jobs (
-                        title, discipline, facility, setting,
-                        city, state, location,
+                        title, discipline, facility, setting, city, state, location,
                         duration_weeks, hours_per_week, shift, start_date,
                         bill_rate, margin_percent, hourly_rate, weekly_gross, contract_total,
-                        description, requirements, benefits,
-                        active, enriched, created_at
+                        description, requirements, benefits, active, enriched, source, created_at
                     ) VALUES (
-                        %s, %s, %s, %s,
-                        %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         %s, %s, %s, %s, %s,
-                        %s, %s, %s,
-                        TRUE, TRUE, NOW()
+                        %s, %s, %s, TRUE, TRUE, 'admin', NOW()
                     ) RETURNING id, title, city, state, weekly_gross, created_at
                 """
                 
@@ -1105,20 +576,6 @@ async def create_job(job: AdminJobCreate, x_admin_password: str = Header(None)):
                 conn.commit()
         
         print(f"✓ New job created via admin: {job.title} in {location}")
-        
-        # AUTO-MATCHING: Find and notify matching candidates
-        try:
-            matches_notified = auto_match_job_to_candidates(
-                new_job['id'], 
-                job.title, 
-                job.discipline,
-                job.city,
-                job.state,
-                float(new_job['weekly_gross'])
-            )
-            print(f"  Notified {matches_notified} matching candidates")
-        except Exception as e:
-            print(f"Auto-match notification error: {e}")
         
         return {
             "success": True,
@@ -1185,12 +642,14 @@ async def send_job_alert(
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Get candidate
                 cur.execute("SELECT * FROM candidates WHERE id = %s", (candidate_id,))
                 candidate = cur.fetchone()
                 
                 if not candidate:
                     raise HTTPException(status_code=404, detail="Candidate not found")
                 
+                # Get matching jobs
                 cur.execute("""
                     SELECT title, city, state, weekly_gross 
                     FROM jobs 
@@ -1202,6 +661,7 @@ async def send_job_alert(
                 if not jobs:
                     raise HTTPException(status_code=400, detail="No active jobs to send")
                 
+                # Build SMS message
                 job_list = "\n".join([f"• {j['title']} in {j['city']}, {j['state']} - ${int(j['weekly_gross'] or 0)}/wk" for j in jobs])
                 message = f"""Hi {candidate['first_name']}! 🎉
 
@@ -1213,6 +673,7 @@ View all: https://thrivingcarestaffing.com/jobs
 
 Reply STOP to unsubscribe."""
 
+                # Send SMS via Twilio
                 if twilio_client and candidate['phone']:
                     twilio_client.messages.create(
                         body=message,
@@ -1244,24 +705,29 @@ async def get_analytics(x_admin_password: str = Header(None)):
     try:
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Total active jobs
                 cur.execute("SELECT COUNT(*) as count FROM jobs WHERE active = TRUE")
                 total_jobs = cur.fetchone()['count']
                 
+                # Total candidates
                 cur.execute("SELECT COUNT(*) as count FROM candidates WHERE active = TRUE")
                 total_candidates = cur.fetchone()['count']
                 
+                # New this week
                 cur.execute("""
                     SELECT COUNT(*) as count FROM candidates 
                     WHERE active = TRUE AND created_at >= NOW() - INTERVAL '7 days'
                 """)
                 new_this_week = cur.fetchone()['count']
                 
+                # With resume
                 cur.execute("""
                     SELECT COUNT(*) as count FROM candidates 
                     WHERE active = TRUE AND resume_url IS NOT NULL
                 """)
                 with_resume = cur.fetchone()['count']
                 
+                # By discipline
                 cur.execute("""
                     SELECT COALESCE(license_type, discipline, 'Other') as discipline, COUNT(*) as count 
                     FROM candidates 
@@ -1287,6 +753,10 @@ async def get_analytics(x_admin_password: str = Header(None)):
 # ============================================================================
 # ADMIN: JOB MANAGEMENT (Edit/Delete)
 # ============================================================================
+
+class JobStatusUpdate(BaseModel):
+    active: bool
+
 
 @app.put("/api/admin/jobs/{job_id}/status")
 async def update_job_status(
@@ -1332,333 +802,38 @@ async def delete_job(
     except Exception as e:
         print(f"Error deleting job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-        # ============================================================================
-# ADMIN: MATCHING SYSTEM
-# ============================================================================
-
-@app.get("/api/admin/match/job/{job_id}")
-async def find_candidates_for_job(
-    job_id: int,
-    x_admin_password: str = Header(None)
-):
-    """Find matching candidates for a job"""
-    
-    if x_admin_password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid admin password")
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
-                job = cur.fetchone()
-                
-                if not job:
-                    raise HTTPException(status_code=404, detail="Job not found")
-                
-                cur.execute("SELECT * FROM candidates WHERE active = TRUE")
-                candidates = cur.fetchall()
-                
-                matches = []
-                for candidate in candidates:
-                    score = calculate_match_score(job, candidate)
-                    if score > 0:
-                        matches.append({
-                            **dict(candidate),
-                            'score': score
-                        })
-                
-                matches.sort(key=lambda x: x['score'], reverse=True)
-                
-                return {"matches": matches[:20]}
-                
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error finding matches: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/admin/match/candidate/{candidate_id}")
-async def find_jobs_for_candidate(
-    candidate_id: int,
-    x_admin_password: str = Header(None)
-):
-    """Find matching jobs for a candidate"""
-    
-    if x_admin_password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid admin password")
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM candidates WHERE id = %s", (candidate_id,))
-                candidate = cur.fetchone()
-                
-                if not candidate:
-                    raise HTTPException(status_code=404, detail="Candidate not found")
-                
-                cur.execute("SELECT * FROM jobs WHERE active = TRUE AND enriched = TRUE")
-                jobs = cur.fetchall()
-                
-                matches = []
-                for job in jobs:
-                    score = calculate_match_score(job, candidate)
-                    if score > 0:
-                        matches.append({
-                            **dict(job),
-                            'score': score
-                        })
-                
-                matches.sort(key=lambda x: x['score'], reverse=True)
-                
-                return {"matches": matches[:20]}
-                
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error finding matches: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-def calculate_match_score(job, candidate):
-    """Calculate match score between job and candidate (0-100)"""
-    score = 0
-    
-    job_discipline = (job.get('discipline') or '').lower()
-    candidate_discipline = (candidate.get('license_type') or candidate.get('discipline') or '').lower()
-    
-    if job_discipline and candidate_discipline:
-        if job_discipline == candidate_discipline:
-            score += 50
-        elif job_discipline in candidate_discipline or candidate_discipline in job_discipline:
-            score += 30
-    
-    job_state = (job.get('state') or '').upper()
-    candidate_state = (candidate.get('home_state') or '').upper()
-    
-    if job_state and candidate_state:
-        if job_state == candidate_state:
-            score += 30
-    
-    if candidate.get('resume_url'):
-        score += 10
-    
-    if candidate.get('created_at'):
-        from datetime import timedelta
-        try:
-            created = candidate['created_at']
-            if isinstance(created, str):
-                created = datetime.fromisoformat(created.replace('Z', '+00:00'))
-            if datetime.now(created.tzinfo if created.tzinfo else None) - created < timedelta(days=30):
-                score += 10
-        except:
-            pass
-    
-    return min(score, 100)
 
 
 # ============================================================================
-# ADMIN: PIPELINE SYSTEM
+# GSA PER DIEM RATES & PAY CALCULATOR
 # ============================================================================
 
-@app.get("/api/admin/pipeline")
-async def get_pipeline(
-    job_id: Optional[int] = None,
-    x_admin_password: str = Header(None)
-):
-    """Get pipeline entries"""
+# GSA Per Diem Rates FY2025 - Key Locations
+GSA_RATES_FY2025 = {
+    # TEXAS
+    "Austin, TX": {"lodging": 166, "mie": 74},
+    "Dallas, TX": {"lodging": 161, "mie": 74},
+    "Fort Worth, TX": {"lodging": 143, "mie": 69},
+    "Houston, TX": {"lodging": 156, "mie": 74},
+    "San Antonio, TX": {"lodging": 138, "mie": 69},
+    "El Paso, TX": {"lodging": 107, "mie": 68},
+    "Plano, TX": {"lodging": 161, "mie": 74},
+    "Irving, TX": {"lodging": 161, "mie": 74},
+    "Arlington, TX": {"lodging": 143, "mie": 69},
+    "Frisco, TX": {"lodging": 161, "mie": 74},
+    "McKinney, TX": {"lodging": 161, "mie": 74},
+    "Allen, TX": {"lodging": 161, "mie": 74},
     
-    if x_admin_password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid admin password")
+    # CALIFORNIA
+    "Los Angeles, CA": {"lodging": 209, "mie": 79},
+    "San Francisco, CA": {"lodging": 311, "mie": 79},
+    "San Diego, CA": {"lodging": 194, "mie": 74},
+    "Sacramento, CA": {"lodging": 168, "mie": 74},
+    "San Jose, CA": {"lodging": 258, "mie": 79},
+    "Fresno, CA": {"lodging": 126, "mie": 69},
+    "Oakland, CA": {"lodging": 240, "mie": 79},
+    "Irvine, CA": {"lodging": 188, "mie": 74},
+    "Anaheim, CA": {"lodging": 188, "mie": 74},
     
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                query = """
-                    SELECT ps.*, c.first_name, c.last_name, c.email, c.phone, 
-                           c.license_type, c.discipline AS candidate_discipline,
-                           j.title AS job_title, j.city AS job_city, j.state AS job_state
-                    FROM pipeline_stages ps
-                    JOIN candidates c ON ps.candidate_id = c.id
-                    LEFT JOIN jobs j ON ps.job_id = j.id
-                    WHERE 1=1
-                """
-                params = []
-                
-                if job_id:
-                    query += " AND ps.job_id = %s"
-                    params.append(job_id)
-                
-                query += " ORDER BY ps.created_at DESC"
-                
-                cur.execute(query, params)
-                entries = cur.fetchall()
-                
-                return {"entries": entries}
-                
-    except Exception as e:
-        print(f"Error fetching pipeline: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/admin/pipeline")
-async def add_to_pipeline(
-    entry: PipelineCreate,
-    x_admin_password: str = Header(None)
-):
-    """Add candidate to pipeline"""
-    
-    if x_admin_password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid admin password")
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT id FROM pipeline_stages 
-                    WHERE candidate_id = %s AND (job_id = %s OR (job_id IS NULL AND %s IS NULL))
-                """, (entry.candidate_id, entry.job_id, entry.job_id))
-                
-                existing = cur.fetchone()
-                if existing:
-                    raise HTTPException(status_code=400, detail="Candidate already in pipeline for this job")
-                
-                cur.execute("""
-                    INSERT INTO pipeline_stages (candidate_id, job_id, stage, created_at)
-                    VALUES (%s, %s, %s, NOW())
-                    RETURNING id
-                """, (entry.candidate_id, entry.job_id, entry.stage))
-                
-                new_entry = cur.fetchone()
-                
-                cur.execute("""
-                    INSERT INTO activity_log (type, description, candidate_id, job_id, created_at)
-                    VALUES ('candidate_added', 'Candidate added to pipeline', %s, %s, NOW())
-                """, (entry.candidate_id, entry.job_id))
-                
-                conn.commit()
-                
-                return {"success": True, "id": new_entry['id']}
-                
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error adding to pipeline: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.put("/api/admin/pipeline/{entry_id}/stage")
-async def update_pipeline_stage(
-    entry_id: int,
-    stage_update: PipelineStageUpdate,
-    x_admin_password: str = Header(None)
-):
-    """Update pipeline stage"""
-    
-    if x_admin_password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid admin password")
-    
-    valid_stages = ['new', 'contacted', 'submitted', 'interviewing', 'offered', 'placed']
-    if stage_update.stage not in valid_stages:
-        raise HTTPException(status_code=400, detail="Invalid stage")
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM pipeline_stages WHERE id = %s", (entry_id,))
-                entry = cur.fetchone()
-                
-                if not entry:
-                    raise HTTPException(status_code=404, detail="Pipeline entry not found")
-                
-                old_stage = entry['stage']
-                
-                cur.execute("""
-                    UPDATE pipeline_stages SET stage = %s WHERE id = %s
-                """, (stage_update.stage, entry_id))
-                
-                cur.execute("""
-                    INSERT INTO activity_log (type, description, candidate_id, job_id, created_at)
-                    VALUES ('stage_change', %s, %s, %s, NOW())
-                """, (f"Stage changed: {old_stage} → {stage_update.stage}", entry['candidate_id'], entry['job_id']))
-                
-                conn.commit()
-                
-                return {"success": True}
-                
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error updating stage: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/admin/pipeline/{entry_id}/note")
-async def add_pipeline_note(
-    entry_id: int,
-    note_data: PipelineNoteCreate,
-    x_admin_password: str = Header(None)
-):
-    """Add note to pipeline entry"""
-    
-    if x_admin_password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid admin password")
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM pipeline_stages WHERE id = %s", (entry_id,))
-                entry = cur.fetchone()
-                
-                if not entry:
-                    raise HTTPException(status_code=404, detail="Pipeline entry not found")
-                
-                current_notes = entry.get('notes') or ''
-                new_notes = f"{current_notes}\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {note_data.note}".strip()
-                
-                cur.execute("""
-                    UPDATE pipeline_stages SET notes = %s WHERE id = %s
-                """, (new_notes, entry_id))
-                
-                cur.execute("""
-                    INSERT INTO activity_log (type, description, candidate_id, job_id, created_at)
-                    VALUES ('note_added', %s, %s, %s, NOW())
-                """, (f"Note: {note_data.note[:50]}...", entry['candidate_id'], entry['job_id']))
-                
-                conn.commit()
-                
-                return {"success": True}
-                
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error adding note: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/admin/activity")
-async def get_activity_log(
-    x_admin_password: str = Header(None),
-    limit: int = 20
-):
-    """Get recent activity log"""
-    
-    if x_admin_password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid admin password")
-    
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT * FROM activity_log
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                """, (limit,))
-                
-                activities = cur.fetchall()
-                
-                return {"activities": activities}
-                
-    except Exception as e:
-        print(f"Error fetching activity: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # FLORIDA
+    "Miami, FL": {"lodging": 
