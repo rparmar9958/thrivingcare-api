@@ -14,7 +14,8 @@ Endpoints:
 - GET /api/gsa-rates - Get GSA per diem rates for a location
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Header
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Header, Request
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
@@ -2091,4 +2092,133 @@ async def find_jobs_for_candidate(
     except Exception as e:
         print(f"Error finding matches: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+        # ============================================================================
+# SMS: SEND JOB ALERT TO CANDIDATE
+# ============================================================================
+
+@app.post("/api/admin/candidates/{candidate_id}/alert")
+async def send_job_alert(
+    candidate_id: int,
+    x_admin_password: str = Header(None)
+):
+    """Send job alert SMS to a candidate"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM candidates WHERE id = %s", (candidate_id,))
+                candidate = cur.fetchone()
+                
+                if not candidate:
+                    raise HTTPException(status_code=404, detail="Candidate not found")
+                
+                cur.execute("""
+                    SELECT title, city, state, weekly_gross 
+                    FROM jobs 
+                    WHERE active = TRUE
+                    ORDER BY created_at DESC
+                    LIMIT 3
+                """)
+                jobs = cur.fetchall()
+                
+                if not jobs:
+                    return {"success": False, "message": "No active jobs to send"}
+                
+                job_list = "\n".join([
+                    f"• {j['title']} in {j['city']}, {j['state']} - ${int(j['weekly_gross'] or 0):,}/wk" 
+                    for j in jobs
+                ])
+                
+                message = f"""Hi {candidate['first_name']}! 🎉
+
+New jobs matching your profile:
+
+{job_list}
+
+View all: https://thrivingcarestaffing.com/jobs
+
+Reply STOP to unsubscribe."""
+
+                if twilio_client and candidate.get('phone'):
+                    twilio_client.messages.create(
+                        body=message,
+                        from_=TWILIO_PHONE,
+                        to=candidate['phone']
+                    )
+                    return {"success": True, "message": "Job alert sent"}
+                else:
+                    return {"success": False, "message": "SMS not configured or no phone number"}
+                    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error sending job alert: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# SMS: WEBHOOK FOR INCOMING MESSAGES
+# ============================================================================
+
+@app.post("/api/sms/webhook")
+async def handle_incoming_sms(request: Request):
+    """Twilio webhook for incoming SMS messages"""
+    
+    try:
+        form_data = await request.form()
+        from_number = form_data.get('From', '')
+        message_body = form_data.get('Body', '').strip()
+        
+        print(f"📱 Incoming SMS from {from_number}: {message_body}")
+        
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM candidates WHERE phone = %s", (from_number,))
+                candidate = cur.fetchone()
+                
+                if not candidate:
+                    print(f"  Unknown sender: {from_number}")
+                    return Response(content="", media_type="text/xml")
+                
+                # Handle STOP/unsubscribe
+                if message_body.upper() in ['STOP', 'UNSUBSCRIBE', 'QUIT']:
+                    cur.execute("UPDATE candidates SET active = FALSE WHERE id = %s", (candidate['id'],))
+                    conn.commit()
+                    
+                    if twilio_client:
+                        twilio_client.messages.create(
+                            body="You've been unsubscribed from ThrivingCare. Reply START to re-subscribe.",
+                            from_=TWILIO_PHONE,
+                            to=from_number
+                        )
+                
+                # Handle START/resubscribe
+                elif message_body.upper() in ['START', 'SUBSCRIBE']:
+                    cur.execute("UPDATE candidates SET active = TRUE WHERE id = %s", (candidate['id'],))
+                    conn.commit()
+                    
+                    if twilio_client:
+                        twilio_client.messages.create(
+                            body="Welcome back! You're now subscribed to ThrivingCare job alerts.",
+                            from_=TWILIO_PHONE,
+                            to=from_number
+                        )
+                
+                # Handle YES/interested
+                elif message_body.upper() in ['YES', 'Y', 'INTERESTED']:
+                    if twilio_client:
+                        twilio_client.messages.create(
+                            body=f"Great {candidate['first_name']}! A recruiter will reach out within 24 hours. View all jobs: https://thrivingcarestaffing.com/jobs",
+                            from_=TWILIO_PHONE,
+                            to=from_number
+                        )
+        
+        return Response(content="<?xml version='1.0' encoding='UTF-8'?><Response></Response>", media_type="text/xml")
+        
+    except Exception as e:
+        print(f"Error handling SMS webhook: {e}")
+        return Response(content="", media_type="text/xml")
 
