@@ -96,6 +96,19 @@ class JobStatusUpdate(BaseModel):
     active: bool
 
 
+class PipelineCreate(BaseModel):
+    candidate_id: int
+    job_id: Optional[int] = None
+    stage: str = "new"
+
+
+class PipelineStageUpdate(BaseModel):
+    stage: str
+
+
+class PipelineNoteCreate(BaseModel):
+    note: str
+
 # Admin password - CHANGE THIS IN PRODUCTION!
 ADMIN_PASSWORD = "thrivingcare2024"
 
@@ -1822,5 +1835,139 @@ async def delete_job(
                 return {"success": True, "message": "Job deleted"}
     except Exception as e:
         print(f"Error deleting job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+        # ============================================================================
+# ADMIN: PIPELINE SYSTEM
+# ============================================================================
+
+@app.get("/api/admin/pipeline")
+async def get_pipeline(
+    job_id: Optional[int] = None,
+    x_admin_password: str = Header(None)
+):
+    """Get pipeline entries"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = """
+                    SELECT ps.*, c.first_name, c.last_name, c.email, c.phone,
+                           c.license_type, j.title AS job_title, j.city AS job_city, j.state AS job_state
+                    FROM pipeline_stages ps
+                    JOIN candidates c ON ps.candidate_id = c.id
+                    LEFT JOIN jobs j ON ps.job_id = j.id
+                    WHERE 1=1
+                """
+                params = []
+                
+                if job_id:
+                    query += " AND ps.job_id = %s"
+                    params.append(job_id)
+                
+                query += " ORDER BY ps.created_at DESC"
+                
+                cur.execute(query, params)
+                entries = cur.fetchall()
+                
+                return {"entries": entries}
+                
+    except Exception as e:
+        print(f"Error fetching pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/pipeline")
+async def add_to_pipeline(
+    entry: PipelineCreate,
+    x_admin_password: str = Header(None)
+):
+    """Add candidate to pipeline"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO pipeline_stages (candidate_id, job_id, stage, created_at)
+                    VALUES (%s, %s, %s, NOW())
+                    RETURNING id
+                """, (entry.candidate_id, entry.job_id, entry.stage))
+                
+                new_entry = cur.fetchone()
+                conn.commit()
+                
+                return {"success": True, "id": new_entry['id']}
+                
+    except Exception as e:
+        print(f"Error adding to pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/admin/pipeline/{entry_id}/stage")
+async def update_pipeline_stage(
+    entry_id: int,
+    stage_update: PipelineStageUpdate,
+    x_admin_password: str = Header(None)
+):
+    """Update pipeline stage"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE pipeline_stages SET stage = %s WHERE id = %s
+                """, (stage_update.stage, entry_id))
+                conn.commit()
+                
+                return {"success": True}
+                
+    except Exception as e:
+        print(f"Error updating stage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/pipeline/{entry_id}/note")
+async def add_pipeline_note(
+    entry_id: int,
+    note_data: PipelineNoteCreate,
+    x_admin_password: str = Header(None)
+):
+    """Add note to pipeline entry"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT notes FROM pipeline_stages WHERE id = %s", (entry_id,))
+                entry = cur.fetchone()
+                
+                if not entry:
+                    raise HTTPException(status_code=404, detail="Pipeline entry not found")
+                
+                from datetime import datetime
+                current_notes = entry.get('notes') or ''
+                new_notes = f"{current_notes}\n[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {note_data.note}".strip()
+                
+                cur.execute("""
+                    UPDATE pipeline_stages SET notes = %s WHERE id = %s
+                """, (new_notes, entry_id))
+                conn.commit()
+                
+                return {"success": True}
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding note: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
