@@ -1970,4 +1970,125 @@ async def add_pipeline_note(
     except Exception as e:
         print(f"Error adding note: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+        # ============================================================================
+# ADMIN: MATCHING SYSTEM
+# ============================================================================
+
+@app.get("/api/admin/match/job/{job_id}")
+async def find_candidates_for_job(
+    job_id: int,
+    x_admin_password: str = Header(None)
+):
+    """Find matching candidates for a job"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
+                job = cur.fetchone()
+                
+                if not job:
+                    raise HTTPException(status_code=404, detail="Job not found")
+                
+                cur.execute("SELECT * FROM candidates WHERE active = TRUE")
+                candidates = cur.fetchall()
+                
+                matches = []
+                for candidate in candidates:
+                    score = 0
+                    
+                    # Discipline match (50 points)
+                    job_discipline = (job.get('discipline') or '').lower()
+                    candidate_discipline = (candidate.get('license_type') or candidate.get('discipline') or '').lower()
+                    if job_discipline and candidate_discipline:
+                        if job_discipline in candidate_discipline or candidate_discipline in job_discipline:
+                            score += 50
+                    
+                    # State match (30 points)
+                    job_state = (job.get('state') or '').upper()
+                    candidate_state = (candidate.get('home_state') or '').upper()
+                    if job_state and candidate_state and job_state == candidate_state:
+                        score += 30
+                    
+                    # Has resume (10 points)
+                    if candidate.get('resume_url'):
+                        score += 10
+                    
+                    # Recent signup (10 points)
+                    score += 10
+                    
+                    if score > 0:
+                        matches.append({**dict(candidate), 'score': score})
+                
+                matches.sort(key=lambda x: x['score'], reverse=True)
+                
+                return {"matches": matches[:20]}
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error finding matches: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/admin/match/candidate/{candidate_id}")
+async def find_jobs_for_candidate(
+    candidate_id: int,
+    x_admin_password: str = Header(None)
+):
+    """Find matching jobs for a candidate"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM candidates WHERE id = %s", (candidate_id,))
+                candidate = cur.fetchone()
+                
+                if not candidate:
+                    raise HTTPException(status_code=404, detail="Candidate not found")
+                
+                cur.execute("SELECT * FROM jobs WHERE active = TRUE")
+                jobs = cur.fetchall()
+                
+                matches = []
+                for job in jobs:
+                    score = 0
+                    
+                    # Discipline match (50 points)
+                    job_discipline = (job.get('discipline') or '').lower()
+                    candidate_discipline = (candidate.get('license_type') or candidate.get('discipline') or '').lower()
+                    if job_discipline and candidate_discipline:
+                        if job_discipline in candidate_discipline or candidate_discipline in job_discipline:
+                            score += 50
+                    
+                    # State match (30 points)
+                    job_state = (job.get('state') or '').upper()
+                    candidate_state = (candidate.get('home_state') or '').upper()
+                    if job_state and candidate_state and job_state == candidate_state:
+                        score += 30
+                    
+                    # Has weekly pay info (10 points)
+                    if job.get('weekly_gross'):
+                        score += 10
+                    
+                    score += 10
+                    
+                    if score > 0:
+                        matches.append({**dict(job), 'score': score})
+                
+                matches.sort(key=lambda x: x['score'], reverse=True)
+                
+                return {"matches": matches[:20]}
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error finding matches: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
