@@ -22,6 +22,7 @@ from typing import Optional, List
 from decimal import Decimal
 import os
 from datetime import datetime
+import re
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import boto3
@@ -109,7 +110,59 @@ class PipelineStageUpdate(BaseModel):
 
 class PipelineNoteCreate(BaseModel):
     note: str
+class PipelineNoteCreate(BaseModel):
+    note: str
 
+
+# ============================================================================
+# ADDRESS PARSER
+# ============================================================================
+
+def parse_address(full_address: str) -> dict:
+    """Parse a full address into components"""
+    
+    result = {
+        'street': '',
+        'city': '',
+        'state': '',
+        'zip': ''
+    }
+    
+    if not full_address:
+        return result
+    
+    import re
+    
+    # Pattern for ZIP code
+    zip_match = re.search(r'\b(\d{5}(?:-\d{4})?)\b', full_address)
+    if zip_match:
+        result['zip'] = zip_match.group(1)
+        full_address = full_address.replace(zip_match.group(1), '').strip()
+    
+    # Pattern for state (2 letter code)
+    state_match = re.search(r'\b([A-Z]{2})\b', full_address.upper())
+    if state_match:
+        result['state'] = state_match.group(1)
+    
+    # Split by comma
+    parts = [p.strip() for p in full_address.split(',')]
+    
+    if len(parts) >= 3:
+        result['street'] = parts[0]
+        result['city'] = parts[1]
+    elif len(parts) == 2:
+        if result['state'] and result['state'] in parts[1].upper():
+            result['city'] = parts[0]
+        else:
+            result['street'] = parts[0]
+            city_part = parts[1].upper().replace(result['state'], '').strip()
+            result['city'] = city_part.title()
+    elif len(parts) == 1:
+        words = full_address.split()
+        city_words = [w for w in words if w.upper() != result['state'] and not re.match(r'\d{5}', w)]
+        result['city'] = ' '.join(city_words).strip(' ,')
+    
+    return result
 # Admin password - CHANGE THIS IN PRODUCTION!
 ADMIN_PASSWORD = "thrivingcare2024"
 
