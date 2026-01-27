@@ -419,9 +419,9 @@ async def create_candidate(candidate: CandidateIntake):
         # Send welcome SMS
         if twilio_client:
             try:
-                welcome_message = f"""Hi {candidate.firstName}! 👋
+                               welcome_message = f"""Hi {candidate.firstName}! 👋
 
-Welcome to ThrivingCare Staffing! 
+Welcome to ThrivingCare Staffing!
 
 We're analyzing your profile ({candidate.specialty}) and will text you as soon as we find matching positions.
 
@@ -434,6 +434,7 @@ Questions? Reply to this message!"""
                     from_=TWILIO_PHONE,
                     to=candidate.phone
                 )
+                print(f"  ✓ Welcome SMS sent to {candidate.phone}")
             except Exception as e:
                 print(f"Failed to send welcome SMS: {e}")
         
