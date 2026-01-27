@@ -418,9 +418,8 @@ async def create_candidate(candidate: CandidateIntake):
         
         # Send welcome SMS
         if twilio_client:
-            try:
-                               welcome_message = f"Hi {candidate.firstName}! 👋\n\nWelcome to ThrivingCare Staffing!\n\nWe're analyzing your profile ({candidate.specialty}) and will text you as soon as we find matching positions.\n\nIn the meantime, browse jobs: https://thrivingcarestaffing.com/jobs\n\nQuestions? Reply to this message!"
-
+             try:
+                welcome_message = f"Hi {candidate.firstName}! 👋\n\nWelcome to ThrivingCare Staffing!\n\nWe're analyzing your profile ({candidate.specialty}) and will text you as soon as we find matching positions.\n\nIn the meantime, browse jobs: https://thrivingcarestaffing.com/jobs\n\nQuestions? Reply to this message!"
                 twilio_client.messages.create(
                     body=welcome_message,
                     from_=TWILIO_PHONE,
