@@ -216,6 +216,19 @@ def parse_resume_text(text: str) -> dict:
     exp_match = re.search(exp_pattern, text, re.IGNORECASE)
     if exp_match:
         extracted['years_experience'] = int(exp_match.group(1))
+    else:
+        # Try to calculate from date ranges (e.g., "2015 - 2024" or "2015-Present")
+        year_pattern = r'(20\d{2}|19\d{2})\s*[-–—to]+\s*(20\d{2}|[Pp]resent|[Cc]urrent)'
+        year_matches = re.findall(year_pattern, text)
+        if year_matches:
+            total_years = 0
+            current_year = 2026
+            for start, end in year_matches:
+                start_year = int(start)
+                end_year = current_year if end.lower() in ['present', 'current'] else int(end)
+                total_years += (end_year - start_year)
+            # Rough estimate accounting for overlapping jobs
+            extracted['years_experience'] = min(total_years, current_year - min(int(m[0]) for m in year_matches))
     
     # Extract specialties
     specialty_pattern = r'\b(ICU|CCU|ER|ED|OR|PACU|L&D|NICU|PICU|Med-?Surg|Telemetry|Oncology|Cardiac|Neuro|Ortho|Psych|Mental Health|Behavioral Health|Pediatric|Geriatric|Home Health|Hospice|Dialysis)\b'
