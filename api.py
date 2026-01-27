@@ -14,7 +14,7 @@ Endpoints:
 - GET /api/gsa-rates - Get GSA per diem rates for a location
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Header, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -172,7 +172,57 @@ VETTING_QUESTIONS = [
     {"id": "min_pay", "question": "What is your minimum weekly pay requirement?", "field": "min_weekly_pay"},
     {"id": "travel", "question": "Are you open to travel/relocation? (Yes/No)", "field": "open_to_travel"}
 ]
-
+# Resume parsing function
+def parse_resume_text(text: str) -> dict:
+    """Extract key information from resume text"""
+    import re
+    
+    extracted = {
+        'licenses': [],
+        'certifications': [],
+        'years_experience': None,
+        'specialties': [],
+        'email': None,
+        'phone': None
+    }
+    
+    # Extract email
+    email_match = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+    if email_match:
+        extracted['email'] = email_match[0]
+    
+    # Extract phone
+    phone_match = re.findall(r'[\(]?\d{3}[\)]?[-.\s]?\d{3}[-.\s]?\d{4}', text)
+    if phone_match:
+        extracted['phone'] = phone_match[0]
+    
+    # Extract licenses (RN, LPN, LCSW, LMFT, etc.)
+    license_pattern = r'\b(RN|LPN|LVN|LCSW|LMFT|LICSW|LPC|NP|PA-C|PMHNP|FNP|CNS)\b'
+    licenses = re.findall(license_pattern, text, re.IGNORECASE)
+    extracted['licenses'] = list(set([l.upper() for l in licenses]))
+    
+    # Extract state licenses
+    state_pattern = r'\b(TX|CA|NY|FL|IL|PA|OH|GA|NC|MI|NJ|VA|WA|AZ|MA|TN|IN|MO|MD|WI|CO|MN|SC|AL|LA|KY|OR|OK|CT|UT|IA|NV|AR|MS|KS|NM|NE|WV|ID|HI|NH|ME|MT|RI|DE|SD|ND|AK|VT|WY|DC)\b'
+    states = re.findall(state_pattern, text, re.IGNORECASE)
+    extracted['license_states'] = list(set([s.upper() for s in states]))
+    
+    # Extract certifications
+    cert_pattern = r'\b(BLS|ACLS|PALS|NRP|TNCC|ENPC|CEN|CCRN|OCN|CNOR|RNC|CMSRN)\b'
+    certs = re.findall(cert_pattern, text, re.IGNORECASE)
+    extracted['certifications'] = list(set([c.upper() for c in certs]))
+    
+    # Extract years of experience
+    exp_pattern = r'(\d+)\+?\s*(?:years?|yrs?)\s*(?:of)?\s*(?:experience|exp)'
+    exp_match = re.search(exp_pattern, text, re.IGNORECASE)
+    if exp_match:
+        extracted['years_experience'] = int(exp_match.group(1))
+    
+    # Extract specialties
+    specialty_pattern = r'\b(ICU|CCU|ER|ED|OR|PACU|L&D|NICU|PICU|Med-?Surg|Telemetry|Oncology|Cardiac|Neuro|Ortho|Psych|Mental Health|Behavioral Health|Pediatric|Geriatric|Home Health|Hospice|Dialysis)\b'
+    specialties = re.findall(specialty_pattern, text, re.IGNORECASE)
+    extracted['specialties'] = list(set([s.title() for s in specialties]))
+    
+    return extracted
 
 # ============================================================================
 # DATABASE HELPERS
@@ -2294,6 +2344,38 @@ async def chat_with_candidate(chat: ChatMessage):
                 conn.commit()
     
     return {"response": response, "next_question": next_step, "profile_completion": 25}
+# ============================================================================
+# RESUME PARSING ENDPOINT
+# ============================================================================
+
+@app.post("/api/parse-resume")
+async def parse_resume(file: UploadFile = File(...)):
+    """Parse uploaded resume and extract information"""
+    import pdfplumber
+    import io
+    
+    if not file.filename.endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    
+    try:
+        contents = await file.read()
+        pdf_file = io.BytesIO(contents)
+        
+        text = ""
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                text += page.extract_text() or ""
+        
+        extracted = parse_resume_text(text)
+        
+        return {
+            "status": "success",
+            "extracted": extracted,
+            "raw_text_preview": text[:500] + "..." if len(text) > 500 else text
+        }
+    except Exception as e:
+        print(f"Error parsing resume: {e}")
+        raise HTTPException(status_code=500, detail=f"Error parsing resume: {str(e)}")
 # ============================================================================
 # SMS: WEBHOOK FOR INCOMING MESSAGES
 # ============================================================================
