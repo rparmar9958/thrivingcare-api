@@ -217,18 +217,14 @@ def parse_resume_text(text: str) -> dict:
     if exp_match:
         extracted['years_experience'] = int(exp_match.group(1))
     else:
-        # Try to calculate from date ranges (e.g., "2015 - 2024" or "2015-Present")
-        year_pattern = r'(20\d{2}|19\d{2})\s*[-–—to]+\s*(20\d{2}|[Pp]resent|[Cc]urrent)'
+        # Try to find years from date formats like "10/2024" or "2024"
+        year_pattern = r'(?:^|[^\d])(\d{1,2}/)?(\d{4})(?:[^\d]|$)'
         year_matches = re.findall(year_pattern, text)
         if year_matches:
-            total_years = 0
-            current_year = 2026
-            for start, end in year_matches:
-                start_year = int(start)
-                end_year = current_year if end.lower() in ['present', 'current'] else int(end)
-                total_years += (end_year - start_year)
-            # Rough estimate accounting for overlapping jobs
-            extracted['years_experience'] = min(total_years, current_year - min(int(m[0]) for m in year_matches))
+            years = [int(m[1]) for m in year_matches if 1990 <= int(m[1]) <= 2026]
+            if years:
+                earliest = min(years)
+                extracted['years_experience'] = 2026 - earliest
     
     # Extract specialties
     specialty_pattern = r'\b(ICU|CCU|ER|ED|OR|PACU|L&D|NICU|PICU|Med-?Surg|Telemetry|Oncology|Cardiac|Neuro|Ortho|Psych|Mental Health|Behavioral Health|Pediatric|Geriatric|Home Health|Hospice|Dialysis)\b'
