@@ -209,6 +209,12 @@ def run_migrations():
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_status VARCHAR(50) DEFAULT 'pending'",
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_score INTEGER",
         
+        # FIX: Expand address columns to handle full addresses
+        "ALTER TABLE candidates ALTER COLUMN home_state TYPE VARCHAR(255)",
+        "ALTER TABLE candidates ALTER COLUMN home_city TYPE VARCHAR(255)",
+        "ALTER TABLE candidates ALTER COLUMN home_address TYPE TEXT",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_score INTEGER",
+        
         # ADMINS TABLE (NEW)
         """CREATE TABLE IF NOT EXISTS admins (
             id SERIAL PRIMARY KEY,
