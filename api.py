@@ -165,6 +165,13 @@ def parse_address(full_address: str) -> dict:
     return result
 # Admin password - CHANGE THIS IN PRODUCTION!
 ADMIN_PASSWORD = "thrivingcare2024"
+VETTING_QUESTIONS = [
+    {"id": "licenses", "question": "What state(s) are you licensed in?", "field": "license_states"},
+    {"id": "experience", "question": "How many years of experience do you have?", "field": "years_experience"},
+    {"id": "start_date", "question": "When are you available to start?", "field": "available_date"},
+    {"id": "min_pay", "question": "What is your minimum weekly pay requirement?", "field": "min_weekly_pay"},
+    {"id": "travel", "question": "Are you open to travel/relocation? (Yes/No)", "field": "open_to_travel"}
+]
 
 
 # ============================================================================
@@ -314,6 +321,15 @@ def run_migrations():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(city, state, fiscal_year)
+        )""",
+        # Chat state table
+        """CREATE TABLE IF NOT EXISTS candidate_chat_state (
+            id SERIAL PRIMARY KEY,
+            candidate_id INTEGER UNIQUE REFERENCES candidates(id) ON DELETE CASCADE,
+            current_step VARCHAR(50) DEFAULT 'start',
+            chat_history JSONB DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
     ]
     
@@ -2205,7 +2221,79 @@ Reply STOP to unsubscribe."""
         print(f"Error sending job alert: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ============================================================================
+# CHAT ENDPOINT
+# ============================================================================
 
+class ChatMessage(BaseModel):
+    message: str = ""
+    candidate_id: Optional[int] = None
+    session_id: Optional[str] = None
+
+@app.post("/api/chat")
+async def chat_with_candidate(chat: ChatMessage):
+    """AI chat endpoint for candidate engagement"""
+    
+    candidate_data = None
+    chat_state = None
+    
+    if chat.candidate_id:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM candidates WHERE id = %s", (chat.candidate_id,))
+                candidate_data = cur.fetchone()
+                
+                cur.execute("SELECT * FROM candidate_chat_state WHERE candidate_id = %s", (chat.candidate_id,))
+                chat_state = cur.fetchone()
+    
+    # First message
+    if not chat_state:
+        first_name = candidate_data.get('first_name', 'there') if candidate_data else 'there'
+        
+        if candidate_data and candidate_data.get('resume_url'):
+            response = f"Welcome {first_name}! 👋\n\nI found info from your resume:\n📋 Specialty: {candidate_data.get('specialty', 'Not detected')}\n📍 Location: {candidate_data.get('home_city', 'Not detected')}\n\nIs this correct? Reply YES or NO."
+            next_step = "confirm_resume"
+        else:
+            response = f"Welcome {first_name}! 👋\n\nLet me ask a few quick questions to find you the best matches.\n\n{VETTING_QUESTIONS[0]['question']}"
+            next_step = VETTING_QUESTIONS[0]['id']
+        
+        if chat.candidate_id:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO candidate_chat_state (candidate_id, current_step) VALUES (%s, %s) ON CONFLICT (candidate_id) DO UPDATE SET current_step = %s", (chat.candidate_id, next_step, next_step))
+                    conn.commit()
+        
+        return {"response": response, "next_question": next_step, "profile_completion": 10}
+    
+    # Continue conversation
+    current_step = chat_state.get('current_step', '')
+    msg = chat.message.strip().lower()
+    
+    if current_step == 'confirm_resume':
+        if 'yes' in msg:
+            response = "Great! ✅\n\n" + VETTING_QUESTIONS[2]['question']
+            next_step = VETTING_QUESTIONS[2]['id']
+        else:
+            response = "No problem!\n\n" + VETTING_QUESTIONS[0]['question']
+            next_step = VETTING_QUESTIONS[0]['id']
+    else:
+        current_idx = next((i for i, q in enumerate(VETTING_QUESTIONS) if q['id'] == current_step), 0)
+        
+        if current_idx < len(VETTING_QUESTIONS) - 1:
+            next_q = VETTING_QUESTIONS[current_idx + 1]
+            response = f"Got it! ✅\n\n{next_q['question']}"
+            next_step = next_q['id']
+        else:
+            response = "Excellent! ✅\n\nYour profile is updated. We'll text you when we find matching positions!\n\nBrowse jobs: https://thrivingcarestaffing.com/jobs"
+            next_step = 'complete'
+    
+    if chat.candidate_id:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE candidate_chat_state SET current_step = %s WHERE candidate_id = %s", (next_step, chat.candidate_id))
+                conn.commit()
+    
+    return {"response": response, "next_question": next_step, "profile_completion": 25}
 # ============================================================================
 # SMS: WEBHOOK FOR INCOMING MESSAGES
 # ============================================================================
