@@ -416,18 +416,7 @@ async def create_candidate(candidate: CandidateIntake):
                 
                 candidate_id = cur.fetchone()['id']
         
-        # Send welcome SMS
-        if twilio_client:
-             try:
-                welcome_message = f"Hi {candidate.firstName}! 👋\n\nWelcome to ThrivingCare Staffing!\n\nWe're analyzing your profile ({candidate.specialty}) and will text you as soon as we find matching positions.\n\nIn the meantime, browse jobs: https://thrivingcarestaffing.com/jobs\n\nQuestions? Reply to this message!"
-                twilio_client.messages.create(
-                    body=welcome_message,
-                    from_=TWILIO_PHONE,
-                    to=candidate.phone
-                )
-                print(f"  ✓ Welcome SMS sent to {candidate.phone}")
-            except Exception as e:
-                print(f"Failed to send welcome SMS: {e}")
+         # SMS disabled for now
         
         # Log event
         print(f"✓ New candidate: {candidate.firstName} {candidate.lastName} ({candidate.email})")
