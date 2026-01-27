@@ -14,7 +14,7 @@ Endpoints:
 - GET /api/gsa-rates - Get GSA per diem rates for a location
 """
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Header
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
