@@ -553,12 +553,9 @@ async def upload_resume(candidate_id: int, resume: UploadFile = File(...)):
             
             resume_url = f"https://{AWS_BUCKET}.s3.amazonaws.com/{s3_key}"
         else:
-            # Fallback: save locally (for development)
-            os.makedirs('uploads/resumes', exist_ok=True)
-            filepath = f"uploads/resumes/{s3_key}"
-            with open(filepath, 'wb') as f:
-                f.write(resume_content)
-            resume_url = f"/uploads/resumes/{s3_key}"
+            # No S3 configured - skip file storage but still parse
+            resume_url = None
+            print("  ⚠ No S3 configured - resume file not stored, but will parse")
         
         # Update database
         with get_db_connection() as conn:
