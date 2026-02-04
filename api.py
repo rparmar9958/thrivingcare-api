@@ -567,7 +567,55 @@ async def upload_resume(candidate_id: int, resume: UploadFile = File(...)):
                     "UPDATE candidates SET resume_url = %s, updated_at = NOW() WHERE id = %s",
                     (resume_url, candidate_id)
                 )
-        
+                conn.commit()
+                
+                # Parse resume if PDF
+                if file_extension.lower() == '.pdf':
+                    try:
+                        import pdfplumber
+                        import io
+                        pdf_file = io.BytesIO(resume_content)
+                        text = ""
+                        with pdfplumber.open(pdf_file) as pdf:
+                            for page in pdf.pages:
+                                text += page.extract_text() or ""
+                        
+                        extracted = parse_resume_text(text)
+                        print(f"  📄 Resume parsed: {extracted}")
+                        
+                        # Update candidate with extracted data
+                        updates = []
+                        values = []
+                        
+                        if extracted.get('license_states'):
+                            updates.append("license_states = %s")
+                            values.append(','.join(extracted['license_states']))
+                        
+                        if extracted.get('certifications'):
+                            updates.append("certifications = %s")
+                            values.append(','.join(extracted['certifications']))
+                        
+                        if extracted.get('years_experience'):
+                            updates.append("years_experience = %s")
+                            values.append(extracted['years_experience'])
+                        
+                        if extracted.get('specialties'):
+                            updates.append("specialty = %s")
+                            values.append(','.join(extracted['specialties']))
+                        
+                        if extracted.get('licenses'):
+                            updates.append("license_type = %s")
+                            values.append(','.join(extracted['licenses']))
+                        
+                        if updates:
+                            values.append(candidate_id)
+                            cur.execute(f"UPDATE candidates SET {', '.join(updates)} WHERE id = %s", tuple(values))
+                            conn.commit()
+                            print(f"  ✓ Candidate profile updated with resume data")
+                            
+                    except Exception as e:
+                        print(f"  ⚠ Resume parsing failed: {e}")
+
         print(f"✓ Resume uploaded for candidate {candidate_id}: {resume_url}")
         
         return {
