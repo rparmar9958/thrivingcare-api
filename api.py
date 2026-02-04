@@ -560,11 +560,12 @@ async def upload_resume(candidate_id: int, resume: UploadFile = File(...)):
         # Update database
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE candidates SET resume_url = %s, updated_at = NOW() WHERE id = %s",
-                    (resume_url, candidate_id)
-                )
-                conn.commit()
+                if resume_url:
+                    cur.execute(
+                        "UPDATE candidates SET resume_url = %s, updated_at = NOW() WHERE id = %s",
+                        (resume_url, candidate_id)
+                    )
+                    conn.commit()
                 
                 # Parse resume if PDF
                 if file_extension.lower() == '.pdf':
