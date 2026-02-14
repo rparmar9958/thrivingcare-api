@@ -1,18 +1,19 @@
 """
-ThrivingCare Website API v2.0
+ThrivingCare Website API v2.1
 ==============================
 
-Backend API with AI-Powered Candidate Engagement
+Backend API with AI-Powered Candidate Engagement & Vetting
 
 Endpoints:
-- POST /api/candidates - Create new candidate from website
+- POST /api/candidates - Create new candidate from website (starts vetting)
 - POST /api/candidates/{id}/resume - Upload resume
 - GET /api/jobs/count - Get total active jobs
 - GET /api/jobs - Get job listings (paginated)
 - GET /run-migrations - Run database migrations
 - POST /api/calculate-pay - Calculate pay package from bill rate
 - GET /api/gsa-rates - Get GSA per diem rates for a location
-- POST /api/sms/webhook - Twilio webhook with AI responses
+- POST /api/sms/webhook - Twilio webhook with AI vetting
+- GET /api/admin/applications - View all applications
 - Admin endpoints for job/candidate management
 """
 
@@ -25,6 +26,7 @@ from decimal import Decimal
 import os
 from datetime import datetime
 import re
+import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import boto3
@@ -138,12 +140,41 @@ class ChatMessage(BaseModel):
 # Admin password - CHANGE THIS IN PRODUCTION!
 ADMIN_PASSWORD = "thrivingcare2024"
 
+# ============================================================================
+# VETTING QUESTIONS - Asked in sequence via SMS
+# ============================================================================
+
 VETTING_QUESTIONS = [
-    {"id": "licenses", "question": "What state(s) are you licensed in?", "field": "license_states"},
-    {"id": "experience", "question": "How many years of experience do you have?", "field": "years_experience"},
-    {"id": "start_date", "question": "When are you available to start?", "field": "available_date"},
-    {"id": "min_pay", "question": "What is your minimum weekly pay requirement?", "field": "min_weekly_pay"},
-    {"id": "travel", "question": "Are you open to travel/relocation? (Yes/No)", "field": "open_to_travel"}
+    {
+        "id": "licenses", 
+        "question": "What state(s) are you licensed in? (e.g., TX, CA, NY)", 
+        "field": "license_states",
+        "step": 1
+    },
+    {
+        "id": "experience", 
+        "question": "How many years of experience do you have in your field?", 
+        "field": "years_experience",
+        "step": 2
+    },
+    {
+        "id": "start_date", 
+        "question": "When are you available to start? (e.g., ASAP, 2 weeks, specific date)", 
+        "field": "available_date",
+        "step": 3
+    },
+    {
+        "id": "min_pay", 
+        "question": "What is your minimum weekly pay requirement? (Just the number, e.g., 2000)", 
+        "field": "min_weekly_pay",
+        "step": 4
+    },
+    {
+        "id": "travel", 
+        "question": "Are you open to travel/relocation for assignments? (Yes/No)", 
+        "field": "open_to_travel",
+        "step": 5
+    }
 ]
 
 
@@ -531,7 +562,7 @@ def read_root():
     return {
         "status": "healthy",
         "service": "ThrivingCare API",
-        "version": "2.0 - AI Engagement",
+        "version": "2.1 - AI Vetting",
         "ai_enabled": anthropic_client is not None,
         "timestamp": datetime.now().isoformat()
     }
@@ -582,11 +613,30 @@ def run_migrations():
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS min_pay_rate DECIMAL(10,2)",
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS max_pay_rate DECIMAL(10,2)",
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS availability_date DATE",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS available_date TEXT",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS min_weekly_pay DECIMAL(10,2)",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS open_to_travel BOOLEAN",
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_status VARCHAR(50) DEFAULT 'pending'",
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_score INTEGER",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS vetting_step INTEGER DEFAULT 0",
         "ALTER TABLE candidates ALTER COLUMN home_state TYPE VARCHAR(255)",
         "ALTER TABLE candidates ALTER COLUMN home_city TYPE VARCHAR(255)",
         "ALTER TABLE candidates ALTER COLUMN home_address TYPE TEXT",
+        
+        # APPLICATIONS TABLE (NEW)
+        """CREATE TABLE IF NOT EXISTS applications (
+            id SERIAL PRIMARY KEY,
+            candidate_id INTEGER REFERENCES candidates(id) ON DELETE CASCADE,
+            job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+            status VARCHAR(50) DEFAULT 'new',
+            vetting_status VARCHAR(50) DEFAULT 'pending',
+            vetting_step INTEGER DEFAULT 0,
+            vetting_answers JSONB DEFAULT '{}',
+            source VARCHAR(100) DEFAULT 'website',
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""",
         
         # GSA RATES TABLE
         """CREATE TABLE IF NOT EXISTS gsa_rates (
@@ -616,11 +666,11 @@ def run_migrations():
         """CREATE TABLE IF NOT EXISTS ai_vetting_logs (
             id SERIAL PRIMARY KEY,
             candidate_id INTEGER REFERENCES candidates(id) ON DELETE CASCADE,
-            session_id VARCHAR(100),
+            application_id INTEGER REFERENCES applications(id) ON DELETE CASCADE,
+            question_id VARCHAR(50),
             question TEXT,
             response TEXT,
-            question_type VARCHAR(50),
-            score INTEGER,
+            step INTEGER,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
         
@@ -750,33 +800,38 @@ def get_jobs(
 
 
 # ============================================================================
-# CANDIDATE ENDPOINTS
+# CANDIDATE ENDPOINTS - WITH AI VETTING
 # ============================================================================
 
 @app.post("/api/candidates", response_model=CandidateResponse)
 async def create_candidate(candidate: CandidateIntake):
-    """Create new candidate from website signup"""
+    """
+    Create new candidate from website signup.
+    - Stores candidate info
+    - Creates application record
+    - Adds to pipeline
+    - Immediately sends first vetting question via SMS
+    """
     
     try:
         address_parts = parse_address(candidate.homeAddress)
         
         with get_db_connection() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                query = """
+                # 1. Insert candidate
+                cur.execute("""
                     INSERT INTO candidates (
                         first_name, last_name, email, phone,
                         home_address, home_city, home_state, home_zip,
                         license_type, specialties, 
-                        active, created_at
+                        active, vetting_step, ai_vetting_status, created_at
                     ) VALUES (
                         %s, %s, %s, %s,
                         %s, %s, %s, %s,
                         %s, ARRAY[%s],
-                        TRUE, NOW()
+                        TRUE, 1, 'in_progress', NOW()
                     ) RETURNING id
-                """
-                
-                cur.execute(query, (
+                """, (
                     candidate.firstName,
                     candidate.lastName,
                     candidate.email,
@@ -790,22 +845,51 @@ async def create_candidate(candidate: CandidateIntake):
                 ))
                 
                 candidate_id = cur.fetchone()['id']
+                
+                # 2. Create application record
+                cur.execute("""
+                    INSERT INTO applications (
+                        candidate_id, status, vetting_status, vetting_step, source, created_at
+                    ) VALUES (
+                        %s, 'new', 'in_progress', 1, 'website', NOW()
+                    ) RETURNING id
+                """, (candidate_id,))
+                
+                application_id = cur.fetchone()['id']
+                
+                # 3. Add to pipeline
+                cur.execute("""
+                    INSERT INTO pipeline_stages (candidate_id, stage, notes, created_at)
+                    VALUES (%s, 'new_application', 'Applied via website - AI vetting started', NOW())
+                """, (candidate_id,))
+                
                 conn.commit()
         
-        # Send welcome SMS
+        # 4. Send welcome + first vetting question via SMS
         if twilio_client:
             try:
-                welcome_message = f"Hi {candidate.firstName}! Welcome to ThrivingCare Staffing! We're analyzing your profile and will text you matching positions. Browse jobs: https://thrivingcarestaffing.com/jobs"
-                twilio_client.messages.create(body=welcome_message, from_=TWILIO_PHONE, to=candidate.phone)
-                print(f"  ✓ Welcome SMS sent to {candidate.phone}")
+                first_question = VETTING_QUESTIONS[0]
+                welcome_message = f"""Hi {candidate.firstName}! 🎉 Welcome to ThrivingCare Staffing!
+
+Thanks for applying. Let me ask a few quick questions to match you with the best opportunities.
+
+{first_question['question']}"""
+                
+                twilio_client.messages.create(
+                    body=welcome_message, 
+                    from_=TWILIO_PHONE, 
+                    to=candidate.phone
+                )
+                print(f"  ✓ Vetting SMS sent to {candidate.phone}")
             except Exception as e:
-                print(f"Failed to send welcome SMS: {e}")
+                print(f"Failed to send vetting SMS: {e}")
         
-        print(f"✓ New candidate: {candidate.firstName} {candidate.lastName} ({candidate.email})")
+        print(f"✓ New application: {candidate.firstName} {candidate.lastName} ({candidate.email})")
+        print(f"  Application ID: {application_id}, Candidate ID: {candidate_id}")
         
         return CandidateResponse(
             id=candidate_id,
-            message="Welcome! We'll start matching you to positions right away.",
+            message="Welcome! Please check your phone for a text from us.",
             status="success"
         )
         
@@ -918,14 +1002,14 @@ async def upload_resume(candidate_id: int, resume: UploadFile = File(...)):
 
 
 # ============================================================================
-# SMS WEBHOOK - AI POWERED
+# SMS WEBHOOK - AI VETTING + ENGAGEMENT
 # ============================================================================
 
 @app.post("/api/sms/webhook")
 async def handle_incoming_sms(request: Request):
     """
     Twilio webhook for incoming SMS messages.
-    Now with AI-powered responses for candidate questions!
+    Handles AI vetting flow + general questions.
     """
     
     try:
@@ -977,7 +1061,103 @@ You're now resubscribed to ThrivingCare job alerts.
 Browse jobs: https://thrivingcarestaffing.com/jobs"""
                 
                 # ============================================================
-                # PRIORITY 3: Handle YES/INTERESTED
+                # PRIORITY 3: Check if in VETTING FLOW
+                # ============================================================
+                elif candidate.get('ai_vetting_status') == 'in_progress':
+                    current_step = candidate.get('vetting_step', 1)
+                    
+                    if current_step <= len(VETTING_QUESTIONS):
+                        current_question = VETTING_QUESTIONS[current_step - 1]
+                        field_name = current_question['field']
+                        
+                        # Store the answer
+                        if field_name == 'license_states':
+                            # Extract state codes from response
+                            states = re.findall(r'\b([A-Z]{2})\b', message_body.upper())
+                            answer_value = ','.join(states) if states else message_body
+                            cur.execute("UPDATE candidates SET license_states = %s WHERE id = %s", (answer_value, candidate_id))
+                        
+                        elif field_name == 'years_experience':
+                            # Extract number
+                            numbers = re.findall(r'\d+', message_body)
+                            years = int(numbers[0]) if numbers else None
+                            if years:
+                                cur.execute("UPDATE candidates SET years_experience = %s WHERE id = %s", (years, candidate_id))
+                        
+                        elif field_name == 'available_date':
+                            cur.execute("UPDATE candidates SET available_date = %s WHERE id = %s", (message_body, candidate_id))
+                        
+                        elif field_name == 'min_weekly_pay':
+                            # Extract number
+                            numbers = re.findall(r'[\d,]+', message_body.replace(',', ''))
+                            pay = int(numbers[0].replace(',', '')) if numbers else None
+                            if pay:
+                                cur.execute("UPDATE candidates SET min_weekly_pay = %s WHERE id = %s", (pay, candidate_id))
+                        
+                        elif field_name == 'open_to_travel':
+                            is_open = message_upper in ['YES', 'Y', 'YEAH', 'YEP', 'SURE', 'OK', 'OKAY']
+                            cur.execute("UPDATE candidates SET open_to_travel = %s WHERE id = %s", (is_open, candidate_id))
+                        
+                        # Log the vetting response
+                        cur.execute("""
+                            INSERT INTO ai_vetting_logs (candidate_id, question_id, question, response, step, created_at)
+                            VALUES (%s, %s, %s, %s, %s, NOW())
+                        """, (candidate_id, current_question['id'], current_question['question'], message_body, current_step))
+                        
+                        # Also update application vetting_answers
+                        cur.execute("""
+                            UPDATE applications 
+                            SET vetting_answers = vetting_answers || %s::jsonb,
+                                vetting_step = %s
+                            WHERE candidate_id = %s
+                        """, (json.dumps({current_question['id']: message_body}), current_step + 1, candidate_id))
+                        
+                        # Move to next question or complete
+                        next_step = current_step + 1
+                        
+                        if next_step <= len(VETTING_QUESTIONS):
+                            # Send next question
+                            next_question = VETTING_QUESTIONS[next_step - 1]
+                            cur.execute("UPDATE candidates SET vetting_step = %s WHERE id = %s", (next_step, candidate_id))
+                            
+                            response_msg = f"""Got it! ✅
+
+{next_question['question']}"""
+                        
+                        else:
+                            # Vetting complete!
+                            cur.execute("""
+                                UPDATE candidates 
+                                SET vetting_step = %s, ai_vetting_status = 'completed' 
+                                WHERE id = %s
+                            """, (next_step, candidate_id))
+                            
+                            cur.execute("""
+                                UPDATE applications 
+                                SET vetting_status = 'completed', status = 'vetted', updated_at = NOW()
+                                WHERE candidate_id = %s
+                            """, (candidate_id,))
+                            
+                            cur.execute("""
+                                UPDATE pipeline_stages 
+                                SET stage = 'vetted', notes = 'AI vetting completed'
+                                WHERE candidate_id = %s AND stage = 'new_application'
+                            """, (candidate_id,))
+                            
+                            response_msg = f"""Excellent, {first_name}! ✅🎉
+
+Your profile is complete! We'll match you with opportunities that fit your preferences.
+
+A recruiter will reach out soon with personalized job matches.
+
+Browse all jobs: https://thrivingcarestaffing.com/jobs
+
+Reply anytime with questions about specific positions!"""
+                        
+                        conn.commit()
+                
+                # ============================================================
+                # PRIORITY 4: Handle YES/INTERESTED
                 # ============================================================
                 elif message_upper in ['YES', 'INTERESTED', 'Y']:
                     cur.execute("""
@@ -993,7 +1173,7 @@ A recruiter will reach out within 24 hours to discuss next steps.
 View all jobs: https://thrivingcarestaffing.com/jobs"""
                 
                 # ============================================================
-                # PRIORITY 4: Handle HELP
+                # PRIORITY 5: Handle HELP
                 # ============================================================
                 elif message_upper == 'HELP':
                     response_msg = f"""Hi {first_name}! Here's how I can help:
@@ -1006,7 +1186,7 @@ View all jobs: https://thrivingcarestaffing.com/jobs"""
 Reply STOP to unsubscribe."""
                 
                 # ============================================================
-                # PRIORITY 5: Handle CALL ME / recruiter requests
+                # PRIORITY 6: Handle CALL ME / recruiter requests
                 # ============================================================
                 elif 'CALL ME' in message_upper or ('CALL' in message_upper and 'RECRUITER' in message_upper):
                     response_msg = f"""Got it, {first_name}! 📞
@@ -1018,7 +1198,7 @@ Email: hello@thrivingcarestaffing.com
 - ThrivingCare Team"""
                 
                 # ============================================================
-                # PRIORITY 6: AI-POWERED RESPONSE for questions/other messages
+                # PRIORITY 7: AI-POWERED RESPONSE for questions
                 # ============================================================
                 else:
                     # Get jobs matching this candidate's discipline
@@ -1076,6 +1256,78 @@ Email: hello@thrivingcarestaffing.com
         import traceback
         traceback.print_exc()
         return Response(content="", media_type="text/xml")
+
+
+# ============================================================================
+# ADMIN: APPLICATIONS
+# ============================================================================
+
+@app.get("/api/admin/applications")
+async def get_applications(
+    status: Optional[str] = None,
+    x_admin_password: str = Header(None)
+):
+    """Get all applications"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = """
+                    SELECT 
+                        a.*,
+                        c.first_name, c.last_name, c.email, c.phone,
+                        c.license_type, c.license_states, c.years_experience,
+                        c.available_date, c.min_weekly_pay, c.open_to_travel,
+                        c.home_city, c.home_state
+                    FROM applications a
+                    JOIN candidates c ON a.candidate_id = c.id
+                    WHERE 1=1
+                """
+                params = []
+                
+                if status:
+                    query += " AND a.status = %s"
+                    params.append(status)
+                
+                query += " ORDER BY a.created_at DESC"
+                
+                cur.execute(query, params)
+                applications = cur.fetchall()
+                
+                return {"applications": applications}
+                
+    except Exception as e:
+        print(f"Error fetching applications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/admin/applications/{application_id}/status")
+async def update_application_status(
+    application_id: int,
+    status: str,
+    x_admin_password: str = Header(None)
+):
+    """Update application status"""
+    
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid admin password")
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE applications 
+                    SET status = %s, updated_at = NOW() 
+                    WHERE id = %s
+                """, (status, application_id))
+                conn.commit()
+                return {"success": True, "message": f"Application status updated to {status}"}
+    except Exception as e:
+        print(f"Error updating application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
@@ -1271,6 +1523,13 @@ async def get_analytics(x_admin_password: str = Header(None)):
                 """)
                 with_resume = cur.fetchone()['count']
                 
+                # Applications stats
+                cur.execute("SELECT COUNT(*) as count FROM applications WHERE status = 'new'")
+                new_applications = cur.fetchone()['count']
+                
+                cur.execute("SELECT COUNT(*) as count FROM applications WHERE vetting_status = 'completed'")
+                vetted_applications = cur.fetchone()['count']
+                
                 cur.execute("""
                     SELECT COALESCE(license_type, discipline, 'Other') as discipline, COUNT(*) as count 
                     FROM candidates 
@@ -1286,6 +1545,8 @@ async def get_analytics(x_admin_password: str = Header(None)):
                     "total_candidates": total_candidates,
                     "new_this_week": new_this_week,
                     "with_resume": with_resume,
+                    "new_applications": new_applications,
+                    "vetted_applications": vetted_applications,
                     "by_discipline": by_discipline
                 }
     except Exception as e:
