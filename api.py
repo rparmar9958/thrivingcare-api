@@ -1070,79 +1070,141 @@ Browse jobs: https://thrivingcarestaffing.com/jobs"""
                         current_question = VETTING_QUESTIONS[current_step - 1]
                         field_name = current_question['field']
                         
-                        # Store the answer
-                        if field_name == 'license_states':
-                            # Extract state codes from response
-                            states = re.findall(r'\b([A-Z]{2})\b', message_body.upper())
-                            answer_value = ','.join(states) if states else message_body
-                            cur.execute("UPDATE candidates SET license_states = %s WHERE id = %s", (answer_value, candidate_id))
+                        # --------------------------------------------------------
+                        # SMART DETECTION: Is this a question or an answer?
+                        # --------------------------------------------------------
+                        is_question = (
+                            '?' in message_body or
+                            message_body.lower().startswith(('what', 'where', 'when', 'how', 'why', 'which', 'can', 'do', 'does', 'is', 'are', 'will', 'would', 'could', 'should', 'tell me', 'explain'))
+                        )
                         
-                        elif field_name == 'years_experience':
-                            # Extract number
-                            numbers = re.findall(r'\d+', message_body)
-                            years = int(numbers[0]) if numbers else None
-                            if years:
-                                cur.execute("UPDATE candidates SET years_experience = %s WHERE id = %s", (years, candidate_id))
+                        # Also check for question-like phrases
+                        question_phrases = ['jobs', 'positions', 'openings', 'pay', 'salary', 'housing', 'stipend', 'benefits', 'location', 'contract', 'start date', 'requirements']
+                        mentions_job_topic = any(phrase in message_body.lower() for phrase in question_phrases)
                         
-                        elif field_name == 'available_date':
-                            cur.execute("UPDATE candidates SET available_date = %s WHERE id = %s", (message_body, candidate_id))
-                        
-                        elif field_name == 'min_weekly_pay':
-                            # Extract number
-                            numbers = re.findall(r'[\d,]+', message_body.replace(',', ''))
-                            pay = int(numbers[0].replace(',', '')) if numbers else None
-                            if pay:
-                                cur.execute("UPDATE candidates SET min_weekly_pay = %s WHERE id = %s", (pay, candidate_id))
-                        
-                        elif field_name == 'open_to_travel':
-                            is_open = message_upper in ['YES', 'Y', 'YEAH', 'YEP', 'SURE', 'OK', 'OKAY']
-                            cur.execute("UPDATE candidates SET open_to_travel = %s WHERE id = %s", (is_open, candidate_id))
-                        
-                        # Log the vetting response
-                        cur.execute("""
-                            INSERT INTO ai_vetting_logs (candidate_id, question_id, question, response, step, created_at)
-                            VALUES (%s, %s, %s, %s, %s, NOW())
-                        """, (candidate_id, current_question['id'], current_question['question'], message_body, current_step))
-                        
-                        # Also update application vetting_answers
-                        cur.execute("""
-                            UPDATE applications 
-                            SET vetting_answers = vetting_answers || %s::jsonb,
-                                vetting_step = %s
-                            WHERE candidate_id = %s
-                        """, (json.dumps({current_question['id']: message_body}), current_step + 1, candidate_id))
-                        
-                        # Move to next question or complete
-                        next_step = current_step + 1
-                        
-                        if next_step <= len(VETTING_QUESTIONS):
-                            # Send next question
-                            next_question = VETTING_QUESTIONS[next_step - 1]
-                            cur.execute("UPDATE candidates SET vetting_step = %s WHERE id = %s", (next_step, candidate_id))
+                        # If it looks like a question about jobs, answer it with AI
+                        if is_question or (mentions_job_topic and len(message_body) > 15):
+                            print(f"  📝 Detected question during vetting: {message_body}")
                             
-                            response_msg = f"""Got it! ✅
+                            # Get matching jobs for AI context
+                            discipline = candidate.get('license_type') or candidate.get('discipline') or ''
+                            cur.execute("""
+                                SELECT * FROM jobs 
+                                WHERE active = TRUE AND enriched = TRUE
+                                AND (discipline ILIKE %s OR %s = '')
+                                ORDER BY created_at DESC
+                                LIMIT 5
+                            """, (f"%{discipline}%", discipline))
+                            matching_jobs = cur.fetchall()
+                            
+                            if not matching_jobs:
+                                cur.execute("""
+                                    SELECT * FROM jobs 
+                                    WHERE active = TRUE AND enriched = TRUE
+                                    ORDER BY created_at DESC
+                                    LIMIT 5
+                                """)
+                                matching_jobs = cur.fetchall()
+                            
+                            # Generate AI response
+                            ai_answer = None
+                            if anthropic_client:
+                                ai_answer = generate_ai_response(
+                                    candidate=dict(candidate),
+                                    message=message_body,
+                                    jobs=[dict(j) for j in matching_jobs] if matching_jobs else []
+                                )
+                            
+                            if ai_answer:
+                                # Append the current vetting question to the AI response
+                                response_msg = f"""{ai_answer}
 
-{next_question['question']}"""
+---
+To continue with your profile: {current_question['question']}"""
+                            else:
+                                # Fallback if AI fails
+                                response_msg = f"""Great question, {first_name}! A recruiter will follow up with details.
+
+In the meantime, let's finish your profile: {current_question['question']}"""
                         
                         else:
-                            # Vetting complete!
-                            cur.execute("""
-                                UPDATE candidates 
-                                SET vetting_step = %s, ai_vetting_status = 'completed' 
-                                WHERE id = %s
-                            """, (next_step, candidate_id))
+                            # --------------------------------------------------------
+                            # This is a vetting answer - process it
+                            # --------------------------------------------------------
                             
+                            # Store the answer based on field type
+                            if field_name == 'license_states':
+                                # Extract state codes from response
+                                states = re.findall(r'\b([A-Z]{2})\b', message_body.upper())
+                                answer_value = ','.join(states) if states else message_body
+                                cur.execute("UPDATE candidates SET license_states = %s WHERE id = %s", (answer_value, candidate_id))
+                            
+                            elif field_name == 'years_experience':
+                                # Extract number
+                                numbers = re.findall(r'\d+', message_body)
+                                years = int(numbers[0]) if numbers else None
+                                if years:
+                                    cur.execute("UPDATE candidates SET years_experience = %s WHERE id = %s", (years, candidate_id))
+                            
+                            elif field_name == 'available_date':
+                                cur.execute("UPDATE candidates SET available_date = %s WHERE id = %s", (message_body, candidate_id))
+                            
+                            elif field_name == 'min_weekly_pay':
+                                # Extract number
+                                numbers = re.findall(r'[\d,]+', message_body.replace(',', ''))
+                                pay = int(numbers[0].replace(',', '')) if numbers else None
+                                if pay:
+                                    cur.execute("UPDATE candidates SET min_weekly_pay = %s WHERE id = %s", (pay, candidate_id))
+                            
+                            elif field_name == 'open_to_travel':
+                                is_open = message_upper in ['YES', 'Y', 'YEAH', 'YEP', 'SURE', 'OK', 'OKAY']
+                                cur.execute("UPDATE candidates SET open_to_travel = %s WHERE id = %s", (is_open, candidate_id))
+                            
+                            # Log the vetting response
+                            cur.execute("""
+                                INSERT INTO ai_vetting_logs (candidate_id, question_id, question, response, step, created_at)
+                                VALUES (%s, %s, %s, %s, %s, NOW())
+                            """, (candidate_id, current_question['id'], current_question['question'], message_body, current_step))
+                            
+                            # Also update application vetting_answers
                             cur.execute("""
                                 UPDATE applications 
-                                SET vetting_status = 'completed', status = 'vetted', updated_at = NOW()
+                                SET vetting_answers = vetting_answers || %s::jsonb,
+                                    vetting_step = %s
                                 WHERE candidate_id = %s
-                            """, (candidate_id,))
+                            """, (json.dumps({current_question['id']: message_body}), current_step + 1, candidate_id))
                             
-                            cur.execute("""
-                                UPDATE pipeline_stages 
-                                SET stage = 'vetted', notes = 'AI vetting completed'
-                                WHERE candidate_id = %s AND stage = 'new_application'
-                            """, (candidate_id,))
+                            # Move to next question or complete
+                            next_step = current_step + 1
+                            
+                            if next_step <= len(VETTING_QUESTIONS):
+                                # Send next question
+                                next_question = VETTING_QUESTIONS[next_step - 1]
+                                cur.execute("UPDATE candidates SET vetting_step = %s WHERE id = %s", (next_step, candidate_id))
+                                
+                                response_msg = f"""Got it! ✅
+
+{next_question['question']}"""
+                            
+                            else:
+                                # Vetting complete!
+                                cur.execute("""
+                                    UPDATE candidates 
+                                    SET vetting_step = %s, ai_vetting_status = 'completed' 
+                                    WHERE id = %s
+                                """, (next_step, candidate_id))
+                                
+                                cur.execute("""
+                                    UPDATE applications 
+                                    SET vetting_status = 'completed', status = 'vetted', updated_at = NOW()
+                                    WHERE candidate_id = %s
+                                """, (candidate_id,))
+                                
+                                cur.execute("""
+                                    UPDATE pipeline_stages 
+                                    SET stage = 'vetted', notes = 'AI vetting completed'
+                                    WHERE candidate_id = %s AND stage = 'new_application'
+                                """, (candidate_id,))
                             
                             response_msg = f"""Excellent, {first_name}! ✅🎉
 
