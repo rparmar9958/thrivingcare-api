@@ -638,6 +638,15 @@ def run_migrations():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )""",
         
+        # APPLICATIONS TABLE - Add missing columns if table already exists
+        "ALTER TABLE applications ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'new'",
+        "ALTER TABLE applications ADD COLUMN IF NOT EXISTS vetting_status VARCHAR(50) DEFAULT 'pending'",
+        "ALTER TABLE applications ADD COLUMN IF NOT EXISTS vetting_step INTEGER DEFAULT 0",
+        "ALTER TABLE applications ADD COLUMN IF NOT EXISTS vetting_answers JSONB DEFAULT '{}'",
+        "ALTER TABLE applications ADD COLUMN IF NOT EXISTS source VARCHAR(100) DEFAULT 'website'",
+        "ALTER TABLE applications ADD COLUMN IF NOT EXISTS notes TEXT",
+        "ALTER TABLE applications ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        
         # GSA RATES TABLE
         """CREATE TABLE IF NOT EXISTS gsa_rates (
             id SERIAL PRIMARY KEY,
