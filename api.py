@@ -127,11 +127,27 @@ VETTING_QUESTIONS = [
     {"id": "travel", "question": "Are you open to travel/relocation for assignments? (Yes/No)", "field": "open_to_travel", "step": 5}
 ]
 
-AI_SYSTEM_PROMPT = """You are a helpful recruiter assistant for ThrivingCare Staffing, a healthcare staffing agency specializing in travel nursing, mental health professionals (LCSW, LMFT, LPC, Psychologists), and school-based clinicians (SLPs, School Counselors).
+AI_SYSTEM_PROMPT = """You are a helpful recruiter assistant for ThrivingCare Staffing, a healthcare staffing agency.
 
-Your role is to answer candidate questions about jobs with specific, accurate information. Be warm, professional, and concise (2-4 short paragraphs max). Use the candidate's first name naturally.
+IMPORTANT RULES:
+1. Keep responses SHORT (2-3 sentences max)
+2. Do NOT list detailed job information in chat
+3. Instead, direct users to browse jobs with a link
+4. Be warm and conversational
+5. Always ask a follow-up question to learn more about what they're looking for
 
-IMPORTANT: Always use REAL data from the job context - never make up pay rates, locations, or requirements. For pay questions, break down: taxable hourly, housing stipend (tax-free), M&IE stipend (tax-free)."""
+RESPONSE FORMAT:
+- Acknowledge their interest briefly
+- Provide a link to relevant jobs: https://thrivingcarestaffing.com/jobs?discipline=X
+- Ask a follow-up question (location preference, experience, availability, etc.)
+
+Example:
+User: "Do you have any SLP jobs?"
+Good response: "Yes! We have several SLP positions available. Check them out here: thrivingcarestaffing.com/jobs?discipline=SLP
+
+What locations are you interested in?"
+
+BAD response: "We have an SLP position in Austin, TX paying $2,100/week with housing stipend of..." (too detailed)"""
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
@@ -181,7 +197,7 @@ Respond helpfully and concisely. Use their name."""
         return None
 
 def get_fallback_response(message: str, first_name: str) -> str:
-    return f"Hi {first_name}! Thanks for your message. A recruiter will follow up shortly.\n\nBrowse jobs: https://thrivingcarestaffing.com/jobs"
+    return f"Great question, {first_name}! Browse our available positions here: thrivingcarestaffing.com/jobs\n\nWhat type of role are you looking for?"
 
 def send_recruiter_alert(candidate: dict, job: dict = None, alert_type: str = "new_application"):
     if not twilio_client or not RECRUITER_PHONE:
@@ -455,9 +471,14 @@ async def chat_with_candidate(chat: ChatMessage):
             anon_candidate = {"first_name": "there"}
             response = generate_ai_response(anon_candidate, chat.message, [dict(j) for j in jobs] if jobs else [])
             if not response:
-                response = "Great question! We have several opportunities available.\n\nTo get personalized matches, share your **phone number** and I'll text you relevant jobs!"
-            else:
-                response += "\n\n---\n💡 Share your phone number for personalized job matches!"
+                # Detect discipline from message for filtered link
+                discipline_link = ""
+                for d in ['RN', 'LPN', 'CNA', 'SLP', 'OT', 'PT', 'LCSW', 'LMFT', 'LPC']:
+                    if d.lower() in chat.message.lower():
+                        discipline_link = f"?discipline={d}"
+                        break
+                response = f"Yes! We have positions available. Browse here: thrivingcarestaffing.com/jobs{discipline_link}\n\nWhat locations interest you?"
+            response += "\n\n💡 Share your phone number for personalized job matches!"
             return {"response": response, "profile_completion": 0, "anonymous": True}
         
         # ========== AUTHENTICATED CHAT ==========
