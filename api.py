@@ -907,6 +907,57 @@ Thanks for applying. Let me ask a few quick questions to match you with the best
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/candidates/{candidate_id}/profile-completion")
+async def get_profile_completion(candidate_id: int):
+    """Check candidate's profile completion status for job applications"""
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM candidates WHERE id = %s", (candidate_id,))
+                candidate = cur.fetchone()
+                
+                if not candidate:
+                    raise HTTPException(status_code=404, detail="Candidate not found")
+                
+                # Calculate completion percentage
+                fields_to_check = [
+                    ('first_name', candidate.get('first_name')),
+                    ('last_name', candidate.get('last_name')),
+                    ('email', candidate.get('email')),
+                    ('phone', candidate.get('phone')),
+                    ('license_type', candidate.get('license_type')),
+                    ('license_states', candidate.get('license_states')),
+                    ('years_experience', candidate.get('years_experience')),
+                    ('available_date', candidate.get('available_date')),
+                    ('min_weekly_pay', candidate.get('min_weekly_pay')),
+                    ('open_to_travel', candidate.get('open_to_travel')),
+                ]
+                
+                completed = sum(1 for field, value in fields_to_check if value)
+                total = len(fields_to_check)
+                percentage = int((completed / total) * 100)
+                
+                # Determine what's missing
+                missing_fields = [field for field, value in fields_to_check if not value]
+                
+                return {
+                    "candidate_id": candidate_id,
+                    "completion_percentage": percentage,
+                    "is_complete": percentage >= 60,  # Consider complete at 60%
+                    "vetting_status": candidate.get('ai_vetting_status', 'pending'),
+                    "completed_fields": completed,
+                    "total_fields": total,
+                    "missing_fields": missing_fields
+                }
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error checking profile completion: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/candidates/{candidate_id}/resume")
 async def upload_resume(candidate_id: int, resume: UploadFile = File(...)):
     """Upload resume for candidate"""
