@@ -231,6 +231,7 @@ def run_migrations():
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS ai_vetting_status VARCHAR(50) DEFAULT 'pending'",
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS vetting_step INTEGER DEFAULT 0",
         "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS resume_url TEXT",
+        "ALTER TABLE candidates ADD COLUMN IF NOT EXISTS session_id VARCHAR(255)",
         """CREATE TABLE IF NOT EXISTS applications (
             id SERIAL PRIMARY KEY, candidate_id INTEGER REFERENCES candidates(id) ON DELETE CASCADE,
             job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL, status VARCHAR(50) DEFAULT 'new',
@@ -398,39 +399,115 @@ async def get_profile_completion(candidate_id: int):
 
 @app.post("/api/chat")
 async def chat_with_candidate(chat: ChatMessage):
-    """AI chat endpoint - FIXED to use AI"""
+    """AI chat - handles anonymous + authenticated sessions"""
     try:
         candidate_data = None
+        
+        # Find existing candidate by ID or session
         if chat.candidate_id:
             with get_db_connection() as conn:
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
                     cur.execute("SELECT * FROM candidates WHERE id = %s", (chat.candidate_id,))
                     candidate_data = cur.fetchone()
-        if not candidate_data:
-            return {"response": "Welcome! 👋 I'm here to help you find healthcare positions.\n\nFirst, what's your name?", "profile_completion": 0}
         
-        first_name = candidate_data.get('first_name', 'there')
+        if not candidate_data and chat.session_id:
+            with get_db_connection() as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute("SELECT * FROM candidates WHERE session_id = %s", (chat.session_id,))
+                    candidate_data = cur.fetchone()
+        
+        # Get jobs for context
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("SELECT * FROM jobs WHERE active = TRUE ORDER BY created_at DESC LIMIT 5")
+                jobs = cur.fetchall()
+        
+        # ========== ANONYMOUS CHAT ==========
+        if not candidate_data:
+            if not chat.message or chat.message.strip() == '':
+                return {"response": "Welcome! 👋 I'm here to help you find healthcare positions.\n\nAsk me about available jobs, pay rates, or locations!\n\nOr tell me what you're looking for.", "profile_completion": 0, "anonymous": True}
+            
+            message_lower = chat.message.lower()
+            
+            # Check for phone/email to create account
+            phone_match = re.search(r'[\(]?\d{3}[\)]?[-.\s]?\d{3}[-.\s]?\d{4}', chat.message)
+            email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', chat.message)
+            
+            if phone_match or email_match:
+                phone = phone_match.group(0) if phone_match else None
+                email = email_match.group(0) if email_match else None
+                if phone:
+                    digits = re.sub(r'\D', '', phone)
+                    phone = f"+1{digits}" if len(digits) == 10 else f"+{digits}" if len(digits) == 11 else phone
+                
+                with get_db_connection() as conn:
+                    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                        if phone:
+                            cur.execute("SELECT * FROM candidates WHERE phone = %s", (phone,))
+                            if cur.fetchone():
+                                return {"response": "Welcome back! I found your profile. How can I help?", "profile_completion": 40, "anonymous": False}
+                        cur.execute("INSERT INTO candidates (email, phone, session_id, active, vetting_step, ai_vetting_status, created_at) VALUES (%s, %s, %s, TRUE, 0, 'pending', NOW()) RETURNING id", (email, phone, chat.session_id))
+                        new_id = cur.fetchone()['id']
+                        conn.commit()
+                return {"response": "Great! 📱 I've saved your contact.\n\nWhat's your **name**?", "profile_completion": 10, "candidate_id": new_id, "anonymous": False}
+            
+            # Use AI for anonymous questions
+            anon_candidate = {"first_name": "there"}
+            response = generate_ai_response(anon_candidate, chat.message, [dict(j) for j in jobs] if jobs else [])
+            if not response:
+                response = "Great question! We have several opportunities available.\n\nTo get personalized matches, share your **phone number** and I'll text you relevant jobs!"
+            else:
+                response += "\n\n---\n💡 Share your phone number for personalized job matches!"
+            return {"response": response, "profile_completion": 0, "anonymous": True}
+        
+        # ========== AUTHENTICATED CHAT ==========
+        first_name = candidate_data.get('first_name') or 'there'
         vetting_status = candidate_data.get('ai_vetting_status') or 'pending'
         vetting_step = candidate_data.get('vetting_step') or 0
+        candidate_id = candidate_data['id']
         
         fields = [candidate_data.get('first_name'), candidate_data.get('last_name'), candidate_data.get('email'), candidate_data.get('phone'), candidate_data.get('license_type'), candidate_data.get('license_states'), candidate_data.get('years_experience'), candidate_data.get('available_date'), candidate_data.get('min_weekly_pay'), candidate_data.get('open_to_travel')]
         profile_completion = int((sum(1 for f in fields if f is not None and f != '') / len(fields)) * 100)
         
         if not chat.message or chat.message.strip() == '':
-            if vetting_status == 'completed':
-                return {"response": f"Welcome back, {first_name}! 😊 How can I help?", "profile_completion": profile_completion, "vetting_status": vetting_status}
+            if first_name == 'there':
+                return {"response": "Welcome! What's your **name**?", "profile_completion": profile_completion, "candidate_id": candidate_id}
+            elif vetting_status == 'completed':
+                return {"response": f"Welcome back, {first_name}! 😊 How can I help?", "profile_completion": profile_completion, "candidate_id": candidate_id}
+            elif vetting_step > 0 and vetting_step <= len(VETTING_QUESTIONS):
+                return {"response": f"Welcome back, {first_name}! Let's continue:\n\n{VETTING_QUESTIONS[vetting_step-1]['question']}", "profile_completion": profile_completion, "candidate_id": candidate_id}
             else:
-                q = VETTING_QUESTIONS[vetting_step - 1] if vetting_step > 0 and vetting_step <= len(VETTING_QUESTIONS) else VETTING_QUESTIONS[0]
-                return {"response": f"Welcome back! Let's continue:\n\n{q['question']}", "profile_completion": profile_completion, "vetting_status": vetting_status}
+                return {"response": f"Hi {first_name}! What's your **discipline**? (e.g., RN, SLP, LCSW, PT)", "profile_completion": profile_completion, "candidate_id": candidate_id}
         
-        with get_db_connection() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                discipline = candidate_data.get('license_type') or ''
-                cur.execute("SELECT * FROM jobs WHERE active = TRUE ORDER BY created_at DESC LIMIT 5")
-                jobs = cur.fetchall()
+        is_question = '?' in chat.message or any(chat.message.lower().startswith(w) for w in ['what', 'where', 'when', 'how', 'why', 'can', 'do', 'is', 'are', 'tell', 'show'])
         
-        is_question = '?' in chat.message or any(chat.message.lower().startswith(w) for w in ['what', 'where', 'when', 'how', 'why', 'can', 'do', 'is', 'are'])
+        # Collect name if missing
+        if not candidate_data.get('first_name') and len(chat.message.split()) <= 3 and not is_question:
+            name_parts = chat.message.strip().split()
+            first_name = name_parts[0].title()
+            last_name = name_parts[1].title() if len(name_parts) > 1 else ''
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE candidates SET first_name = %s, last_name = %s WHERE id = %s", (first_name, last_name, candidate_id))
+                    conn.commit()
+            return {"response": f"Nice to meet you, {first_name}! 👋\n\nWhat's your **discipline**? (e.g., RN, SLP, LCSW, PT, OT)", "profile_completion": 20, "candidate_id": candidate_id}
         
+        # Collect discipline if missing
+        if not candidate_data.get('license_type'):
+            discipline_map = {'rn': 'RN', 'nurse': 'RN', 'lpn': 'LPN', 'cna': 'CNA', 'slp': 'SLP', 'speech': 'SLP', 'ot': 'OT', 'occupational': 'OT', 'pt': 'PT', 'physical': 'PT', 'lcsw': 'LCSW', 'social worker': 'LCSW', 'lmft': 'LMFT', 'lpc': 'LPC', 'counselor': 'LPC', 'psychologist': 'Psychologist'}
+            detected = None
+            for key, val in discipline_map.items():
+                if key in chat.message.lower():
+                    detected = val
+                    break
+            if detected:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("UPDATE candidates SET license_type = %s, ai_vetting_status = 'in_progress', vetting_step = 1 WHERE id = %s", (detected, candidate_id))
+                        conn.commit()
+                return {"response": f"Great, {first_name}! {detected} - got it! ✅\n\n{VETTING_QUESTIONS[0]['question']}", "profile_completion": 30, "candidate_id": candidate_id, "vetting_status": "in_progress"}
+        
+        # Process vetting answers
         if vetting_status == 'in_progress' and vetting_step > 0 and vetting_step <= len(VETTING_QUESTIONS) and not is_question:
             with get_db_connection() as conn:
                 with conn.cursor() as cur:
@@ -438,37 +515,39 @@ async def chat_with_candidate(chat: ChatMessage):
                     field = q['field']
                     if field == 'license_states':
                         states = re.findall(r'\b([A-Z]{2})\b', chat.message.upper())
-                        cur.execute("UPDATE candidates SET license_states = %s WHERE id = %s", (','.join(states) if states else chat.message, chat.candidate_id))
+                        cur.execute("UPDATE candidates SET license_states = %s WHERE id = %s", (','.join(states) if states else chat.message, candidate_id))
                     elif field == 'years_experience':
                         nums = re.findall(r'\d+', chat.message)
-                        if nums: cur.execute("UPDATE candidates SET years_experience = %s WHERE id = %s", (int(nums[0]), chat.candidate_id))
+                        if nums: cur.execute("UPDATE candidates SET years_experience = %s WHERE id = %s", (int(nums[0]), candidate_id))
                     elif field == 'available_date':
-                        cur.execute("UPDATE candidates SET available_date = %s WHERE id = %s", (chat.message, chat.candidate_id))
+                        cur.execute("UPDATE candidates SET available_date = %s WHERE id = %s", (chat.message, candidate_id))
                     elif field == 'min_weekly_pay':
                         nums = re.findall(r'[\d,]+', chat.message)
-                        if nums: cur.execute("UPDATE candidates SET min_weekly_pay = %s WHERE id = %s", (int(nums[0].replace(',','')), chat.candidate_id))
+                        if nums: cur.execute("UPDATE candidates SET min_weekly_pay = %s WHERE id = %s", (int(nums[0].replace(',','')), candidate_id))
                     elif field == 'open_to_travel':
-                        cur.execute("UPDATE candidates SET open_to_travel = %s WHERE id = %s", (chat.message.upper() in ['YES','Y','YEAH','YEP','SURE'], chat.candidate_id))
+                        cur.execute("UPDATE candidates SET open_to_travel = %s WHERE id = %s", (chat.message.upper() in ['YES','Y','YEAH','YEP','SURE','OK'], candidate_id))
                     
                     next_step = vetting_step + 1
                     if next_step > len(VETTING_QUESTIONS):
-                        cur.execute("UPDATE candidates SET vetting_step = %s, ai_vetting_status = 'completed' WHERE id = %s", (next_step, chat.candidate_id))
-                        cur.execute("UPDATE applications SET vetting_status = 'completed', status = 'vetted' WHERE candidate_id = %s", (chat.candidate_id,))
-                        response = f"Excellent, {first_name}! ✅🎉\n\nYour profile is complete! A recruiter will reach out soon."
+                        cur.execute("UPDATE candidates SET vetting_step = %s, ai_vetting_status = 'completed' WHERE id = %s", (next_step, candidate_id))
+                        response = f"Excellent, {first_name}! ✅🎉\n\nProfile complete! A recruiter will reach out soon.\n\nAsk me anything about jobs!"
                         profile_completion = 100
                     else:
-                        cur.execute("UPDATE candidates SET vetting_step = %s WHERE id = %s", (next_step, chat.candidate_id))
+                        cur.execute("UPDATE candidates SET vetting_step = %s WHERE id = %s", (next_step, candidate_id))
                         response = f"Got it! ✅\n\n{VETTING_QUESTIONS[next_step - 1]['question']}"
                         profile_completion = int((next_step / len(VETTING_QUESTIONS)) * 60) + 40
                     conn.commit()
-            return {"response": response, "profile_completion": profile_completion, "vetting_status": "completed" if next_step > len(VETTING_QUESTIONS) else "in_progress"}
+            return {"response": response, "profile_completion": profile_completion, "candidate_id": candidate_id}
         
+        # AI response for questions
         response = generate_ai_response(dict(candidate_data), chat.message, [dict(j) for j in jobs] if jobs else [])
         if not response:
             response = get_fallback_response(chat.message, first_name)
-        return {"response": response, "profile_completion": profile_completion, "vetting_status": vetting_status}
+        return {"response": response, "profile_completion": profile_completion, "candidate_id": candidate_id}
     except Exception as e:
         print(f"Chat error: {e}")
+        import traceback
+        traceback.print_exc()
         return {"response": "Sorry, please try again!", "profile_completion": 0}
 
 @app.get("/api/chat/history/{candidate_id}")
